@@ -11,3 +11,7 @@ eval_bundle/
 # Local setup
 CLAUDE.md
 wandb/
+param_audit.py
+mem_probe.py
+sweep.sh
+budget_real.py

@@ -29,6 +29,7 @@ from tasks.common import TaskMixture
 from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
+from tasks.toolcalling import ToolCalling
 
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -64,6 +65,10 @@ parser.add_argument("--chatcore-max-sample", type=int, default=24, help="max pro
 # Data mixture
 parser.add_argument("--mmlu-epochs", type=int, default=3, help="number of epochs of MMLU in training mixture (teaches Multiple Choice)")
 parser.add_argument("--gsm8k-epochs", type=int, default=4, help="number of epochs of GSM8K in training mixture (teaches Math and Tool Use)")
+# Stage 4: tool calling. The stock smol-smoltalk mixture excludes function calling
+# by design, so this is the only place the model learns to emit a call.
+parser.add_argument("--toolcall-epochs", type=int, default=2, help="number of epochs of the tool-calling corpus in the training mixture (0 = disable)")
+parser.add_argument("--toolcall-data", type=str, default=None, help="path to tool-calling corpus (default: env TOOLCALL_DATA)")
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
@@ -164,13 +169,18 @@ train_tasks = [
     *[MMLU(subset="all", split="auxiliary_train") for _ in range(args.mmlu_epochs)], # 100K rows per epoch
     *[GSM8K(subset="main", split="train") for _ in range(args.gsm8k_epochs)], # 8K rows per epoch
 ]
+if args.toolcall_epochs > 0:
+    tc_kwargs = {"split": "train"}
+    if args.toolcall_data:
+        tc_kwargs["path"] = args.toolcall_data
+    train_tasks += [ToolCalling(**tc_kwargs) for _ in range(args.toolcall_epochs)]
 train_dataset = TaskMixture(train_tasks)
-print0(f"Training mixture: {len(train_dataset):,} rows (MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs})")
+print0(f"Training mixture: {len(train_dataset):,} rows (MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, ToolCalling x{args.toolcall_epochs})")
 val_dataset = TaskMixture([
     SmolTalk(split="test"), # 24K rows in test set
     MMLU(subset="all", split="test", stop=5200), # 14K rows in test set, use only 5.2K to match the train ratios
     GSM8K(subset="main", split="test", stop=420), # 1.32K rows in test set, use only 420 to match the train ratios
-]) # total: 24K + 5.2K + 0.42K ~= 29.6K rows
+] + ([ToolCalling(split="val")] if args.toolcall_epochs > 0 else [])) # total: 24K + 5.2K + 0.42K ~= 29.6K rows
 # DataLoader is defined here, it emits inputs, targets : 2D tensors of shape (device_batch_size, max_seq_len)
 # A big problem is that we don't know the final num_iterations in advance. So we create
 # these two global variables and update them from within the data generator.
