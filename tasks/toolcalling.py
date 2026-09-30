@@ -210,36 +210,90 @@ class ToolCalling(Task):
     def evaluate(self, conversation, assistant_response):
         """
         Does the sampled response call the same function with the same arguments?
-        Exact-match on (name, args) — the right metric for a 2B model on this task.
+
+        Exact match on the (name, args) sequence. Two partial scores are also
+        returned by `score`, because a 286M model's errors are informative:
+          - function-name accuracy: did it pick the right tool at all?
+          - call-count accuracy: did it emit the right number of calls?
         """
         assert isinstance(assistant_response, str)
-        ref_msgs = conversation["messages"]
         ref = []
-        for m in ref_msgs:
+        for m in conversation["messages"]:
             if m["role"] == "assistant" and isinstance(m["content"], list):
                 for p in m["content"]:
                     if p.get("type") == "python":
-                        ref.append(p["text"])
+                        ref.append(_norm_call(p["text"]))
         if not ref:
             return 0
-        pred = [ln for ln in assistant_response.splitlines() if ln.strip().startswith("CALL")]
-        return int(len(pred) == len(ref) and all(
-            _norm_call(p) == _norm_call(r) for p, r in zip(pred, ref)))
+        pred = extract_predicted_calls(assistant_response)
+        return int(pred == ref)
+
+    def score(self, conversation, assistant_response):
+        """Dict of partial credit. See evaluate() for why this is split out."""
+        ref = []
+        for m in conversation["messages"]:
+            if m["role"] == "assistant" and isinstance(m["content"], list):
+                for p in m["content"]:
+                    if p.get("type") == "python":
+                        ref.append(_norm_call(p["text"]))
+        pred = extract_predicted_calls(assistant_response)
+        if not ref:
+            return {"exact": 0, "fn": 0, "count": 0, "n_ref": 0}
+        fn = sum(1 for r, p in zip(ref, pred) if p[0] == r[0])
+        return {
+            "exact": int(pred == ref),
+            "fn": fn / len(ref),
+            "count": int(len(pred) == len(ref)),
+            "n_ref": len(ref),
+        }
+
+
+def _looks_like_call(line):
+    """Heuristic: does this line contain a function-name + JSON-args pair?"""
+    m = re.match(r'^([A-Za-z_][A-Za-z0-9_]{2,})\s*(\{.*\})\s*$', line)
+    return bool(m)
 
 
 def _norm_call(line):
-    """Normalize a 'CALL name {json}' line for robust comparison."""
+    """Normalize a 'CALL name {json}' line for robust comparison.
+
+    Tolerates the model's real failure modes at this scale: it may forget the
+    literal CALL keyword, and it may emit several calls on one line separated by
+    python_end/python_start markers rather than newlines. Comparison is on
+    (name, args) only -- never on formatting.
+    """
     line = line.strip()
-    if not line.startswith("CALL"):
-        return line
-    body = line[4:].strip()
-    name, _, argstr = body.partition(" ")
+    # strip any leftover special-token markers
+    for marker in ("<|python_start|>", "<|python_end|>", "<|assistant_start|>"):
+        line = line.replace(marker, "\n" if marker.endswith("start|>") else "")
+    if line.startswith("CALL"):
+        line = line[4:].strip()
+    name, _, argstr = line.partition(" ")
     try:
         args = json.loads(argstr)
-        args = {k: args[k] for k in sorted(args)}
-        return (name, json.dumps(args, sort_keys=True))
+        if not isinstance(args, dict):
+            return (name, argstr.strip())
+        return (name, json.dumps(args, sort_keys=True, separators=(",", ":")))
     except json.JSONDecodeError:
-        return (name, argstr)
+        return (name, argstr.strip())
+
+
+def extract_predicted_calls(completion):
+    """Pull predicted (name, args) pairs out of a raw model completion."""
+    text = (completion or "").translate(_ZERO_WIDTH)
+    calls = []
+    for chunk in re.split(r"<\s*\|\s*python_end\s*\|\s*>", text):
+        chunk = re.sub(r"<\s*\|\s*python_start\s*\|\s*>", " ", chunk)
+        chunk = re.sub(r"<\s*\|\s*assistant_end\s*\|\s*>", "\n", chunk)
+        for line in chunk.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("CALL"):
+                calls.append(_norm_call(line))
+            elif _looks_like_call(line):
+                calls.append(_norm_call(line))
+    return calls
 
 
 if __name__ == "__main__":
