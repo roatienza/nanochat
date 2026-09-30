@@ -182,6 +182,43 @@ comparable across tokenizers, which is exactly the trap the plan warns about in
 This is the plan's first trap demonstrated rather than asserted: the loss curve
 looks smooth and healthy, but only bpb tells you the model is actually improving.
 
+### Stage 1 evaluation — CORE 0.1390
+
+`python -m scripts.base_eval --model-tag d12 --eval core,bpb`
+
+| metric | value |
+|---|---|
+| **CORE** | **0.1390** |
+| val bpb | 0.8777 |
+| train bpb | 0.7645 |
+
+Calibration against nanochat's published leaderboard, so the number means something:
+
+| model | params | val_bpb | CORE | node-hours |
+|---|---:|---:|---:|---:|
+| **this run, d12** | **286 M** | **0.878** | **0.139** | **0.44 (4 GPU)** |
+| leaderboard d24 | 1.4 B | 0.748 | 0.2585 | 3.04 (8×H100) |
+| leaderboard d26 (GPT-2 grade) | 1.7 B | 0.745 | 0.2578 | 2.91 (8×H100) |
+| original OpenAI GPT-2 | 1.6 B | — | 0.2565 | 168 |
+
+So d12 is roughly a quarter of the way to GPT-2 grade on a 5× smaller model with
+6× less training. That is the expected shape, not a failure: CORE climbs steeply
+with both scale and ratio, and d12 at ratio 12 is deliberately the cheap workhorse,
+not the headline. **This model is not GPT-2 grade and should not be presented as
+such** — the gap 0.139 → 0.257 is what Stages 2–3 have to close.
+
+Per-task centered scores show the expected profile for a 286 M model: strong on
+arc_easy (+0.41), piqa (+0.35), lambada (+0.29); near-random on commonsense_qa
+(+0.03) and winogrande (+0.02); below random on boolq (−0.25). Multiple-choice
+format is learned (arc_easy 55.6% ≫ 25% chance) while the harder commonsense
+formats are not yet.
+
+**Trap 1 from PLAN.md §5.1, now demonstrated:** train loss ended at 2.60 and
+val_bpb at 0.878, and those two numbers say almost nothing about each other. A
+student watching only the loss curve would conclude this run is healthy; it is,
+but they would have no idea it is at 54% of GPT-2 CORE. Hence bpb + CORE, never
+loss alone.
+
 ---
 
 ## Stage 4 — Tool calling (built ahead of Stage 2/3, since it is the real work)
@@ -228,7 +265,73 @@ Data sanity: 311 CALL parts, 0 unparseable; calls-per-turn spreads 1→9
 multi-step trajectories.
 
 Wired into `chat_sft.py` behind `--toolcall-epochs` / `--toolcall-data`, in both the
-train and val mixtures.
+train and val mixtures. Mixture confirmed: **791,831 rows** = 460,341 smol-smoltalk
++ 3×99,842 MMLU + 4×7,473 GSM8K + 2×1,036 tool-calling.
+
+### Stage 3 — SFT ✅ (ran with the Stage 4 data in the mixture)
+
+```bash
+torchrun --standalone --nproc_per_node=4 -m scripts.chat_sft -- \
+  --run=sft-v1 --model-tag=d12 --toolcall-epochs=2 \
+  --device-batch-size=16 --total-batch-size=131072
+```
+
+3,756 steps, 15.8 min, 31.6% MFU. val bpb **0.3647** (from 0.8781 after pretraining).
+
+| ChatCORE task | accuracy |
+|---|---:|
+| ARC-Easy | 36.66% |
+| ARC-Challenge | 32.00% |
+| MMLU | 30.88% |
+| GSM8K | 4.17% |
+| HumanEval | 4.17% |
+| **ChatCORE** | **0.0821** (cat 0.1090) |
+
+**Do not compare ChatCORE 0.0821 to the base model's CORE 0.1390.** They are not
+the same metric: base CORE is few-shot ICL accuracy, ChatCORE is zero-shot accuracy
+in the chat format. A chat model scoring lower on ICL-style few-shot is expected.
+The pair is only comparable within itself across stages.
+
+### Stage 4 acceptance test — format learned, capability not (at 286 M)
+
+`nanochat/eval_toolcalling.py`, 54 held-out val examples, greedy decoding:
+
+| metric | result |
+|---|---|
+| emits the `<\|python_start\|>CALL name {json}<\|python_end\|>` format | **100%** |
+| right function **name** | 41.0% of 119 calls |
+| right **number** of calls | 7.4% of examples |
+| exact match (name **and** arguments) | **0.0%** |
+
+This is the honest result and it is worth stating precisely, because the two halves
+say different things:
+
+- **The data pipeline works.** The stock mixture has no function calling at all, and
+  after adding 2 epochs of the Stage 4 task the model emits well-formed calls on
+  100% of held-out prompts and picks a sensible tool 41% of the time. The masking
+  recipe (loss on the call, not the schema) does what it claims.
+- **286 M parameters is not enough for exact argument binding.** The failure mode is
+  visible in the dumps: it gets `get_camera_live_feed {"camera_id":"front_door"}`
+  right but drops `"stream_quality":"1080p"`; it invents `thermostat_id:
+  "temperature_123"` for `thermo123`; it emits 2 schedule entries where 13 are
+  needed. Copying long JSON argument structures verbatim is a capacity problem, not
+  a formatting problem.
+
+**This is the plan's Trap 1 (§5.1) landing exactly where the plan says it would.**
+SFT loss fell 1.57 → 1.24 and val bpb halved 0.878 → 0.365, so the run looks
+healthy by every training metric, while the capability the stage exists to teach is
+still at zero. Loss is not capability. The correct next move is Stage 2 (scale to
+d28 ≈ 2.0 B, a 7× increase) and re-running this same eval — not more SFT epochs on
+d12, which would train the loss down further and change nothing.
+
+Two scorer bugs were found and fixed while building this eval, both of which had
+initially reported 0/12 with the model merely *echoing the prompt*
+(`generate_batch` returns prompt+continuation, not just the continuation) and then
+0% with the model actually doing the task (the scorer demanded a literal `CALL`
+keyword at line start, which the model drops once it is inside `<|python_start|>`).
+Neither was a model failure. A third was a genuine near-miss: the model reorders
+JSON keys, which is semantically identical, so comparison is now on parsed
+`(name, args)` rather than raw text.
 
 ---
 
