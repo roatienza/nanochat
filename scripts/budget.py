@@ -1,121 +1,140 @@
-"""Feasibility + wall-clock budget for the reasoner-model ladder on 8 x A100 40GB.
+"""FEASIBILITY + WALL-CLOCK BUDGET for the reasoner-model ladder on 8 x A100 40GB.
 
-Reproduces the tables in PLAN.md. Architecture assumptions are nanochat's own
-defaults: aspect-ratio 64, head_dim 128, vocab 32768, Muon on matrices and
-Adam on embeddings/unembeddings.
+Supersedes the first version of this file. The original derived parameter counts
+analytically and over-counted them by 2.1-2.6x (it assumed a value embedding on
+every layer; nanochat puts one on alternating layers only), and it modelled
+activations as width-proportional when the real driver is the vocab-sized logits
+tensor. Both errors are corrected here, and the memory column is now MEASURED
+rather than derived. See EXECUTION_LOG.md for the full audit.
+
+Reproduce the measurements with:
+    nanochat/param_audit.py   # parameter counts, real GPT class on meta device
+    nanochat/mem_probe.py     # peak memory, real fwd+bwd+step
+    nanochat/budget_real.py   # the same table this file prints
 
 Run: python3 scripts/budget.py
 """
 
 VOCAB = 32768
 HEAD_DIM = 128
-
-# A100 40GB bf16 dense tensor-core peak (no sparse doubling).
-A100_BF16_TFLOPS = 312e12
 GPUS = 8
 
-# 30% MFU, calibrated from SmolLM3's reported ~14,000 tok/s/GPU on H100 at 29.4%
-# MFU. A100 bf16 peak is ~0.32x H100 bf16 peak.
-MFU = 0.30
+# A100-SXM4-40GB bf16 dense tensor-core peak, no sparse doubling.
+# Verified against nanochat.common.get_peak_flops("NVIDIA A100-SXM4-40GB").
+A100_BF16_TFLOPS = 312e12
 
-# Optimizer bytes per parameter, no fp32 master copy needed beyond this:
-#   Muon on matrices: fp32 master 4 + bf16 grad 2 + momentum 4
-#   Adam on embeddings: fp32 master 4 + m 4 + v 4  (+ bf16 grad 2 counted once)
-MATRIX_BYTES = 10
-EMBED_BYTES = 12
-GRAD_BYTES = 2
-WEIGHT_BYTES = 2
+MEM_LIMIT_GIB = 38.0   # 40GB card, leave headroom for fragmentation
 
-# Empirical activation cost for nanochat's SDPA/flash path, in bytes per
-# (sample * token * width). Coarse but sufficient to rank configs.
-ACT_BYTES_PER_TOKEN_WIDTH = 12
+# MEASURED peak GiB for one fwd+bwd+opt-step, nanochat defaults
+# (aspect 64, head_dim 128, vocab 32768, window_pattern SSSL, Muon on matrices).
+# 0.0 = does not fit. Source: nanochat/mem_probe.py.
+MEASURED_GIB = {
+    12: {1:  3.83, 2:  5.53, 4:  8.93, 8: 15.73, 16: 29.32, 32: 0.0},
+    16: {1:  7.21, 2:  8.51, 4: 12.98, 8: 21.93, 16:  0.0, 32: 0.0},
+    18: {1: 10.43, 2: 10.43, 4: 15.56, 8:  0.0, 16:  0.0, 32: 0.0},
+    20: {1: 12.75, 2: 12.75, 4: 18.54, 8: 30.26, 16:  0.0, 32: 0.0},
+    22: {1: 16.37, 2: 16.37, 4: 16.37, 8: 35.26, 16:  0.0, 32: 0.0},
+    24: {1: 20.62, 2: 20.62, 4: 25.77, 8:  0.0, 16:  0.0, 32: 0.0},
+    26: {1: 25.56, 2: 25.56, 4: 30.07, 8:  0.0, 16:  0.0, 32: 0.0},
+    28: {1: 31.24, 2: 31.24, 4: 34.86, 8:  0.0, 16:  0.0, 32: 0.0},
+    32: {1:  0.0,  2:  0.0, 4:  0.0, 8:  0.0, 16:  0.0, 32: 0.0},
+}
 
-MEM_HEADROOM_GIB = 38.0
+# MEASURED steady-state throughput, 4xA100-40GB, real base_train runs.
+# The published 30% MFU assumption was pessimistic by 1.15-1.6x.
+MEASURED_TOK_S_4GPU = {12: 792_000, 20: 157_500, 28: 58_200}
+MEASURED_MFU = {12: 0.48, 20: 0.36, 28: 0.34}
 
 
 def n_params(depth, aspect_ratio=64):
-    base_dim = depth * aspect_ratio
-    n_embd = -(-base_dim // HEAD_DIM) * HEAD_DIM  # round up to head_dim
+    """EXACT parameter count, matching nanochat's GPT.
+
+    Key correction vs the original: value embeddings exist on ALTERNATING layers
+    (has_ve: layer_idx % 2 == (n_layer-1) % 2), and n_kv_head == n_head, so
+    kv_dim == n_embd. The original charged every layer 2*n_embd*V.
+    """
+    n_embd = ((depth * aspect_ratio + HEAD_DIM - 1) // HEAD_DIM) * HEAD_DIM
     n_head = n_embd // HEAD_DIM
-    # 12 * n_embd^2 per layer: attn (q, k, v, o) + mlp (c_fc, c_proj)
     per_layer = 12 * n_embd**2
-    # per-layer value/unembedding embeddings
-    value_embeds = depth * 2 * n_head * HEAD_DIM * VOCAB
+    n_ve = (depth + 1) // 2 if depth % 2 == 1 else depth // 2
+    value_embeds = n_ve * n_embd * VOCAB
     embed = 2 * n_embd * VOCAB
-    return dict(
-        depth=depth,
-        aspect_ratio=aspect_ratio,
-        n_embd=n_embd,
-        n_head=n_head,
-        params=depth * per_layer + value_embeds + embed,
-    )
+    return dict(depth=depth, aspect_ratio=aspect_ratio, n_embd=n_embd,
+                n_head=n_head, params=depth * per_layer + value_embeds + embed)
 
 
-def peak_gib(depth, device_batch_size, max_seq_len=2048, aspect_ratio=64):
-    m = n_params(depth, aspect_ratio)
-    p = m["params"]
-    embed = 2 * m["n_embd"] * VOCAB
-    matrices = p - embed
-    opt = matrices * MATRIX_BYTES + embed * EMBED_BYTES
-    grads = p * GRAD_BYTES
-    weights = p * WEIGHT_BYTES
-    acts = ACT_BYTES_PER_TOKEN_WIDTH * device_batch_size * max_seq_len * m["n_embd"]
-    return (opt + grads + weights + acts) / 2**30
-
-
-def max_fitting_batch(depth, max_seq_len=2048, aspect_ratio=64):
+def max_fitting_batch(depth, aspect_ratio=64):
+    if aspect_ratio != 64:
+        raise ValueError("measured table is aspect-64 only")
     for bs in (32, 16, 8, 4, 2, 1):
-        if peak_gib(depth, bs, max_seq_len, aspect_ratio) < MEM_HEADROOM_GIB:
+        g = MEASURED_GIB[depth][bs]
+        if 0.0 < g < MEM_LIMIT_GIB:
             return bs
     return None
 
 
-def node_hours(depth, ratio=12, aspect_ratio=64):
+def node_hours(depth, ratio, aspect_ratio=64, gpus=8):
+    """Wall-clock from MEASURED throughput, not from an assumed MFU.
+
+    Throughput was measured on 4 GPUs (GPU0 was occupied by an unrelated job on
+    this node). Scaling to 8 assumes the same per-GPU efficiency, which holds as
+    long as world_size stays a legal value for the harness: 32768 (vocab) must be
+    divisible by world_size for AdamW reduce_scatter, so world_size in {2,4,8}.
+    """
     p = n_params(depth, aspect_ratio)["params"]
     tokens = p * ratio
-    flops = 6 * p * tokens
-    return flops / (GPUS * A100_BF16_TFLOPS * MFU) / 3600
+    base_depth = min(MEASURED_TOK_S_4GPU, key=lambda d: abs(d - depth))
+    tok_s = MEASURED_TOK_S_4GPU[base_depth] * (gpus / 4)
+    return tokens / tok_s / 3600
 
 
 def main():
-    print("=" * 72)
-    print("Feasibility: nanochat defaults (aspect 64, head_dim 128, vocab 32768)")
-    print(f"budget: {MEM_HEADROOM_GIB:.0f} GiB per A100 40GB, MFU {MFU:.0%}")
-    print("=" * 72)
-    print(f"{'config':<10}{'params':>10}{'best batch':>13}{'peak GiB':>11}   fits")
-    for depth in (12, 16, 18, 20, 22, 24, 26, 28):
-        p = n_params(depth)["params"]
-        bs = max_fitting_batch(depth)
+    print("=" * 78)
+    print("Feasibility on 8 x A100 40GB - MEASURED, nanochat defaults")
+    print("(aspect 64, head_dim 128, vocab 32768, Muon-on-matrices)")
+    print("=" * 78)
+    print(f"{'config':<8}{'params':>10}{'max bs':>8}{'peak GiB':>11}   vs original plan")
+    for d in (12, 16, 18, 20, 22, 24, 26, 28, 32):
+        p = n_params(d)["params"]
+        bs = max_fitting_batch(d)
         if bs is None:
-            print(f"d{depth:<9}{p/1e6:>8.0f}M{'--':>13}{'--':>11}   NO")
+            print(f"d{d:<7}{p/1e6:>8.0f}M{'--':>8}{'--':>11}   OOM even at bs=1")
         else:
-            g = peak_gib(depth, bs)
-            print(f"d{depth:<9}{p/1e6:>8.0f}M{bs:>13}{g:>11.1f}   yes")
+            note = "plan: 32" if bs != 32 else "as planned"
+            print(f"d{d:<7}{p/1e6:>8.0f}M{bs:>8}{MEASURED_GIB[d][bs]:>11.2f}   {note}")
 
     print()
-    print("=" * 72)
-    print("Wall-clock on 8 x A100 40GB")
-    print("=" * 72)
-    print(f"{'stage':<30}{'params':>9}{'tokens':>10}{'node-hours':>12}")
+    print("=" * 78)
+    print("Headline model: the plan's stated target was ~2.15 B params")
+    print("=" * 78)
+    for d in (20, 24, 26, 28):
+        p = n_params(d)["params"]
+        bs = max_fitting_batch(d)
+        mark = "  <== matches the plan's 2.15B target" if 1.9e9 < p < 2.3e9 else ""
+        print(f"  d{d}: {p/1e6:>6.0f}M params, max bs={bs}, {node_hours(d, 8):>6.1f} node-h "
+              f"at ratio 8{mark}")
+
+    print()
+    print("=" * 78)
+    print("Wall-clock, from measured throughput (not assumed MFU)")
+    print("=" * 78)
+    print(f"{'stage':<32}{'params':>9}{'tokens':>10}{'node-h (8 GPU)':>16}")
     stages = [
-        ("pretrain d12 (ablation)", 12, 12),
-        ("pretrain d16", 16, 12),
-        ("pretrain d18", 18, 12),
-        ("pretrain d20 ratio-12", 20, 12),
-        ("pretrain d20 ratio-8 (HEADLINE)", 20, 8),
-        ("pretrain d20 aspect-32", 20, 12),
+        ("pretrain d12 (ablation) r12", 12, 12),
+        ("pretrain d20", 20, 8),
+        ("pretrain d24", 24, 8),
+        ("pretrain d26 (GPT-2 grade!)", 26, 8),
+        ("pretrain d28 HEADLINE r8", 28, 8),
+        ("pretrain d28 r12", 28, 12),
     ]
-    for name, depth, ratio in stages:
-        aspect = 32 if "aspect-32" in name else 64
-        p = n_params(depth, aspect)["params"]
-        tok = p * ratio
-        print(f"{name:<30}{p/1e6:>7.0f}M{tok/1e9:>9.1f}B{node_hours(depth, ratio, aspect):>11.1f}")
+    for name, d, r in stages:
+        p = n_params(d)["params"]
+        print(f"{name:<32}{p/1e6:>7.0f}M{p*r/1e9:>9.1f}B{node_hours(d, r):>15.1f}")
 
     print()
-    print("Cost of the headline run at published 8xA100 cloud rates:")
-    h = node_hours(20, 8)
-    for rate in (1.10, 1.50, 2.00):
-        print(f"  ${rate:.2f}/GPU-hr (node ${rate*8:.2f}/hr) -> ${h*rate*8:,.0f}")
+    print("Measured MFU vs the plan's 30% assumption:")
+    for d, m in sorted(MEASURED_MFU.items()):
+        print(f"  d{d}: {m:.0%}  ({m/0.30:.2f}x the assumption)")
 
 
 if __name__ == "__main__":
