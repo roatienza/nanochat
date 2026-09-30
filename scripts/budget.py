@@ -59,8 +59,25 @@ def n_params(depth, aspect_ratio=64):
     n_ve = (depth + 1) // 2 if depth % 2 == 1 else depth // 2
     value_embeds = n_ve * n_embd * VOCAB
     embed = 2 * n_embd * VOCAB
+    matrices = depth * per_layer
     return dict(depth=depth, aspect_ratio=aspect_ratio, n_embd=n_embd,
-                n_head=n_head, params=depth * per_layer + value_embeds + embed)
+                n_head=n_head, params=matrices + value_embeds + embed,
+                matrices=matrices, value_embeds=value_embeds, embed=embed)
+
+
+def n_scaling_params(depth, aspect_ratio=64):
+    """The parameter count `--target-param-data-ratio` is actually applied to.
+
+    base_train.py uses `transformer_matrices + lm_head`, EXCLUDING the value
+    embeddings, because those two give the cleanest scaling laws (the code cites
+    dev/LOG.md Jan 27 2026). Verified against a live d28 run:
+    1,137,707,312 * 8 = 9,101,658,496 vs the log's 9,101,639,680.
+
+    This matters: ratio 8 means 9.1B tokens, not 16.1B, so quoting a "data:param
+    ratio" without saying WHICH params is ambiguous by ~1.8x in wall-clock.
+    """
+    m = n_params(depth, aspect_ratio)
+    return m["matrices"] + m["embed"] // 2  # lm_head only, not wte
 
 
 def max_fitting_batch(depth, aspect_ratio=64):
@@ -73,15 +90,20 @@ def max_fitting_batch(depth, aspect_ratio=64):
     return None
 
 
-def node_hours(depth, ratio, aspect_ratio=64, gpus=8):
+def node_hours(depth, ratio, aspect_ratio=64, gpus=8, params_basis="scaling"):
     """Wall-clock from MEASURED throughput, not from an assumed MFU.
 
     Throughput was measured on 4 GPUs (GPU0 was occupied by an unrelated job on
     this node). Scaling to 8 assumes the same per-GPU efficiency, which holds as
     long as world_size stays a legal value for the harness: 32768 (vocab) must be
     divisible by world_size for AdamW reduce_scatter, so world_size in {2,4,8}.
+
+    params_basis: "scaling" matches what the harness actually does (matrices +
+    lm_head, excluding value embeddings). "total" is what PLAN.md's arithmetic
+    implies. They differ by ~1.8x in wall-clock; "scaling" is the truth.
     """
-    p = n_params(depth, aspect_ratio)["params"]
+    p = (n_scaling_params(depth, aspect_ratio) if params_basis == "scaling"
+         else n_params(depth, aspect_ratio)["params"])
     tokens = p * ratio
     base_depth = min(MEASURED_TOK_S_4GPU, key=lambda d: abs(d - depth))
     tok_s = MEASURED_TOK_S_4GPU[base_depth] * (gpus / 4)
@@ -117,19 +139,31 @@ def main():
     print()
     print("=" * 78)
     print("Wall-clock, from measured throughput (not assumed MFU)")
+    print("tokens = ratio x SCALING params (matrices + lm_head), which is what")
+    print("base_train.py actually uses -- NOT total params")
     print("=" * 78)
-    print(f"{'stage':<32}{'params':>9}{'tokens':>10}{'node-h (8 GPU)':>16}")
+    print(f"{'stage':<30}{'total':>8}{'scaling':>9}{'tokens':>9}{'h(4GPU)':>9}{'h(8GPU)':>9}")
     stages = [
         ("pretrain d12 (ablation) r12", 12, 12),
-        ("pretrain d20", 20, 8),
-        ("pretrain d24", 24, 8),
-        ("pretrain d26 (GPT-2 grade!)", 26, 8),
+        ("pretrain d20 r8", 20, 8),
+        ("pretrain d24 r8", 24, 8),
+        ("pretrain d26 (GPT-2 grade) r8", 26, 8),
         ("pretrain d28 HEADLINE r8", 28, 8),
         ("pretrain d28 r12", 28, 12),
     ]
     for name, d, r in stages:
-        p = n_params(d)["params"]
-        print(f"{name:<32}{p/1e6:>7.0f}M{p*r/1e9:>9.1f}B{node_hours(d, r):>15.1f}")
+        tot = n_params(d)["params"]
+        sca = n_scaling_params(d)
+        print(f"{name:<30}{tot/1e6:>6.0f}M{sca/1e6:>8.0f}M{sca*r/1e9:>8.1f}B"
+              f"{node_hours(d, r, gpus=4):>9.1f}{node_hours(d, r, gpus=8):>9.1f}")
+
+    print()
+    print("  If you instead (incorrectly) use total params for the ratio:")
+    for name, d, r in stages:
+        if d != 28 or r != 8:
+            continue
+        print(f"    {name}: {node_hours(d, r, params_basis='total'):.1f} h on 4 GPU"
+              "  <- 2.3x optimistic, the trap PLAN.md falls into")
 
     print()
     print("Measured MFU vs the plan's 30% assumption:")

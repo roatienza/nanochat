@@ -335,12 +335,93 @@ JSON keys, which is semantically identical, so comparison is now on parsed
 
 ---
 
+## Stage 2 — Headline pretrain (d28 ≈ 2.02 B) — RUNNING
+
+```bash
+torchrun --standalone --nproc_per_node=4 -m scripts.base_train -- \
+  --depth=28 --run=headline-d28 --model-tag=d28b \
+  --device-batch-size=4 --total-batch-size=32768 \
+  --target-param-data-ratio=8 --save-every=2000 --eval-every=500
+```
+
+The harness independently confirms the corrected parameter count:
+
+```
+wte                     :    58,720,256
+value_embeds            :   822,083,584
+lm_head                 :    58,720,256
+transformer_matrices    : 1,078,987,056
+scalars                 :            82
+total                   : 2,018,511,234     <- the plan called this "d20, 2155M"
+```
+
+277,760 iterations, 9.10 B tokens, 34.2% MFU, 565 ms/step.
+
+### Finding 4 — `--target-param-data-ratio` does not mean what the plan assumes
+
+The plan's Stage 2 command says "ratio 8 rather than 12" and computes cost as
+`params × ratio`. But `base_train.py` applies the ratio to **scaling params**, not
+total params:
+
+```python
+scaling_params = param_counts['transformer_matrices'] + param_counts['lm_head']
+# = 1,137,707,312, NOT 2,018,511,234
+```
+
+The 822 M of value embeddings are excluded, deliberately (the code cites
+`dev/LOG.md`: transformer matrices + lm_head give the cleanest scaling laws).
+So ratio 8 ⇒ **9.10 B tokens**, not the 16.1 B that `2.02B × 8` implies. Verified
+exactly: `1,137,707,312 × 8 = 9,101,658,496` against the log's 9,101,639,680
+(rounding in `int()`).
+
+This matters for cost planning: at 34% MFU the run is **~43.6 h on 4 GPUs**
+(~21.8 h on 8). Both the plan's node-hour table and my own corrected table in
+`scripts/budget.py` are wrong here, because both multiply *total* params by the
+ratio. Corrected:
+
+| basis | ratio 8 tokens | 4-GPU hours |
+|---|---:|---:|
+| scaling params (what the harness does) | 9.10 B | **43.6** |
+| total params (what the plan implies) | 16.1 B | 19.3 |
+
+The harness is the authority here — it is derived from measured scaling laws — but
+the plan should state which parameter count it means, because the two differ by 1.8×
+in wall-clock. **Note this in the plan: quoting "data:param ratio" without saying
+"scaling params" is ambiguous by a factor of ~1.8 in cost.**
+
+### Finding 5 — the batch size is not a free parameter, it sets the LR
+
+At bs=4 on 4 GPUs the total batch is 32,768 tokens, and the harness scales the
+learning rates to compensate:
+
+```
+Scaling LRs by 0.2500 for batch size 32,768 (reference: 524,288)
+```
+
+That is a 4× LR reduction versus the reference recipe. It is the correct thing for
+the harness to do, but it means **this run is not LR-comparable to the published
+leaderboard**, which uses total batch 524,288–1M. The leaderboard's d24/d26 entries
+at CORE 0.258 are therefore not a like-for-like target for this run. Recorded so
+nobody later mistakes a gap for a modelling failure.
+
+---
+
 ## Still to do
 
-- **Stage 2** — headline pretrain. Corrected target: **d28 (2.02 B) at ratio 8**,
-  ~38.5 node-h, bs=4. Blocked in practice on GPU 0 being occupied.
-- **Stage 3** — SFT on the d12 checkpoint, with `--toolcall-epochs=2`.
-- **Stage 5** — GSM8K RL (nanochat ships it; note the author's own header concedes
-  it is REINFORCE-like, not GRPO).
-- **Stage 6** — agentic RL. Unbounded; the plan's own 200–1000 node-h estimate
-  stands and is the dominant cost of the project.
+- **Stage 2** — headline pretrain (d28, 2.02 B) — **running**, ~43.6 h on 4 GPUs.
+  Checkpoints every 2,000 steps. See Findings 4 and 5 above for the two reasons the
+  published cost/LR figures do not transfer.
+- **Stage 3/4 re-run on d28** — the acceptance test that matters. d12 reached 100%
+  format compliance but 0% exact tool calls; the hypothesis is that ~2.0 B fixes
+  argument binding. Untestable until Stage 2 lands.
+- **Stage 5** — GSM8K RL. nanochat ships `chat_rl.py`; its own header concedes the
+  method is REINFORCE-like rather than GRPO (no trust region, on-policy so no PPO
+  ratio, DAPO token-level normalization, `(r − μ)` advantage). Report pass@k, not
+  single-sample.
+- **Stage 6** — agentic RL. The plan's 200–1000 node-h estimate stands and is the
+  dominant cost of the whole project, 2–12× the pretrain. `nanochat/execution.py`
+  provides a subprocess sandbox whose own docstring says it is **not a security
+  boundary** (no seccomp, no containers, network not blocked) — fine for eval, must
+  never be presented as a deployment boundary. EnvScaler (ACL 2026 Findings) found
+  the steepest gains going 0 → 20 environments, so breadth of cheap verifiable
+  environments beats depth of one hard one.
