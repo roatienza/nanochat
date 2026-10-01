@@ -408,9 +408,105 @@ nobody later mistakes a gap for a modelling failure.
 
 ## Still to do
 
-- **Stage 2** — headline pretrain (d28, 2.02 B) — **running**, ~43.6 h on 4 GPUs.
-  Checkpoints every 2,000 steps. See Findings 4 and 5 above for the two reasons the
-  published cost/LR figures do not transfer.
+- **Stage 2** — headline pretrain (d28, 2.02 B) — **STOPPED, NOT RUNNING. DO NOT
+  RESUME NAIVELY.** See "Stage 2 incident" below.
+
+---
+
+# Stage 2 incident — the run died, and it will die again
+
+**The log line above used to say "running" as of the 16:40 commit. That was already
+stale when written, and it is now false. The run has been dead since 22:51:49 on
+Sep 30.** Correcting the record here because the commit history and this file are the
+project's only source of truth.
+
+## What happened
+
+| | |
+|---|---|
+| Launched | 2026-09-30 16:32:43 (wandb run `oyydgnor`) |
+| Died | 2026-09-30 **22:51:49** |
+| Survived | 24,149 / 277,760 steps (8.69%), 226.8 min |
+| Peak loss | 2.60, steady ~2.64, val_bpb 0.8859 at step 24,000 |
+
+**No traceback, no CUDA OOM, no Python exception.** The log ends mid-line at step
+24149. wandb's own core log records the cause in one line:
+
+```
+2026-09-30T22:51:51 server: parent process exited, terminating service process
+```
+
+Parent exited = the training process was killed, not a Python-level failure. Host was
+up 44 days (no reboot), 962 GB RAM free, no ECC/Xid events, GPUs 0 and 3–7 idle.
+So: not a host reboot, not host OOM.
+
+## Root cause: the disk filled up
+
+This is the finding that matters, and it is not a mystery:
+
+- `df` on `/` (where checkpoints go, `~/.cache/nanochat`): **18 GB free, 99% used**
+- Every checkpoint is **14.62 GB** = 6.31 GB model + 4 × 2.08 GB AdamW shards
+- 12 checkpoints already on disk = **175 GB** (measured: 164 GiB)
+- `--save-every=2000`, so the next save at step 26,000 needs 14.62 GB
+
+**18 GB free is barely one checkpoint of headroom.** Whatever killed the process at
+22:51, the run is now on a knife edge: it cannot reach step 26,000 without writing
+another 14.62 GB. Resuming as-is will die again almost immediately.
+
+## Why it is *not* resumable-as-configured, and not a lost-compute situation
+
+Good news: the checkpoint survived and is **not** torn, despite being written 90 s
+before death. Verified by full deserialization:
+
+- `model_024000.pt` loads, **2,018,511,234 params**, 203 tensors, **zero non-finite**
+- `optim_024000_rank0.pt` shard loads
+- `meta_024000.json` intact: `val_bpb 0.88588`, `dataloader_state_dict` at
+  `pq_idx 1, rg_idx 32, epoch 3`, `min_val_bpb 0.88391`, `total_training_time 13525 s`
+
+Only **149 steps (~14 min)** of compute was lost, not the ~20 min I first estimated —
+the 24,000 save landed just before the kill. `base_train.py` supports
+`--resume-from-step` and saves `dataloader_state_dict`, so the data-loader position
+resumes correctly (no data repetition or skip).
+
+## The disk problem is structural, not a one-off
+
+`--save-every=2000` over 277,760 steps = **139 checkpoints × 14.62 GB = 2.03 TiB**.
+Only **2.8 TiB** is free on the whole `/data` volume, and `/` has 18 GB. So keeping
+every checkpoint has never been possible on this box. Someone had to prune, and
+nothing was.
+
+## Required fixes before relaunch
+
+1. **Relocate checkpoints off `/`.** `nanochat/common.py:73` honours
+   `NANOCHAT_BASE_DIR`, so point it at `/data/rowel` (2.8 TiB free, verified
+   writable). This is the clean fix — no code change, no symlink.
+2. **Prune the 164 GiB already in `~/.cache/nanochat/base_checkpoints/d28b`.** Keep
+   `model_024000.pt` + its 4 optim shards + `meta_024000.json`; the other 11
+   checkpoints are unrecoverable-anyway and only 175 GB.
+3. **Reconsider `--save-every=2000`.** At 14.62 GB per save it is ~31% of the
+   remaining wall-clock cost of the project in I/O alone. 4,000–5,000 costs ~20 min
+   of lost work per kill but halves the disk. Pick deliberately, not by default.
+
+## Resume command (NOT YET RUN — awaiting go-ahead)
+
+```bash
+cd /home/rowel/baby-sandbox/nanochat
+export NANOCHAT_BASE_DIR=/data/rowel/nanochat
+mkdir -p $NANOCHAT_BASE_DIR
+# copy the 24000 ckpt across, then:
+torchrun --nproc_per_node=4 -m scripts.base_train \
+  --depth=28 --run=headline-d28 --model-tag=d28b \
+  --device-batch-size=4 --total-batch-size=32768 \
+  --target-param-data-ratio=8 --save-every=2000 --eval-every=500 \
+  --core-metric-every=999999 --sample-every=-1 \
+  --resume-from-step=24000
+```
+
+Note `--nproc_per_node=4`: GPUs 1 and 2 are occupied by another user's vLLM server
+(Qwen3.5-27B, PIDs 361057/361058). GPU 0 now shows 3.8 GB used by someone else, so
+only **3,4,5,6,7 (5 GPUs)** are reliably free. Restarting on 4 ranks keeps the LR
+scaling identical to what step 24,000 was trained under — **changing GPU count would
+change total batch size and invalidate the resume.**
 - **Stage 3/4 re-run on d28** — the acceptance test that matters. d12 reached 100%
   format compliance but 0% exact tool calls; the hypothesis is that ~2.0 B fixes
   argument binding. Untestable until Stage 2 lands.
