@@ -335,7 +335,7 @@ JSON keys, which is semantically identical, so comparison is now on parsed
 
 ---
 
-## Stage 2 — Headline pretrain (d28 ≈ 2.02 B) — RUNNING
+## Stage 2 — Headline pretrain (d28 ≈ 2.02 B) — RESUMED 2026-10-01
 
 ```bash
 torchrun --standalone --nproc_per_node=4 -m scripts.base_train -- \
@@ -408,15 +408,15 @@ nobody later mistakes a gap for a modelling failure.
 
 ## Still to do
 
-- **Stage 2** — headline pretrain (d28, 2.02 B) — **STOPPED, NOT RUNNING. DO NOT
-  RESUME NAIVELY.** See "Stage 2 incident" below.
+- **Stage 2** — headline pretrain (d28, 2.02 B) — **RESUMED 2026-10-01 09:29 from
+  step 24,000, running on GPUs 4,5,6,7.** See "Stage 2 resume" below.
 
 ---
 
 # Stage 2 incident — the run died, and it will die again
 
-**The log line above used to say "running" as of the 16:40 commit. That was already
-stale when written, and it is now false. The run has been dead since 22:51:49 on
+**The "Stage 2 — RUNNING" heading above said "running" as of the 16:40 commit. It was already
+stale when written, and it stayed false for 11 hours. The run was dead from 22:51:49 on
 Sep 30.** Correcting the record here because the commit history and this file are the
 project's only source of truth.
 
@@ -487,26 +487,84 @@ nothing was.
    remaining wall-clock cost of the project in I/O alone. 4,000–5,000 costs ~20 min
    of lost work per kill but halves the disk. Pick deliberately, not by default.
 
-## Resume command (NOT YET RUN — awaiting go-ahead)
+## Resume — actually run, 2026-10-01
+
+Resumed from **step 24,000** on **GPUs 4,5,6,7** at 09:29. The disk is fixed and the
+step-25,000 checkpoint — the exact save that killed the previous run — completed
+cleanly.
 
 ```bash
-cd /home/rowel/baby-sandbox/nanochat
-export NANOCHAT_BASE_DIR=/data/rowel/nanochat
-mkdir -p $NANOCHAT_BASE_DIR
-# copy the 24000 ckpt across, then:
-torchrun --nproc_per_node=4 -m scripts.base_train \
+cd /data/rowel/nanochat
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 -m scripts.base_train -- \
   --depth=28 --run=headline-d28 --model-tag=d28b \
   --device-batch-size=4 --total-batch-size=32768 \
-  --target-param-data-ratio=8 --save-every=2000 --eval-every=500 \
+  --target-param-data-ratio=8 --save-every=5000 --eval-every=500 \
   --core-metric-every=999999 --sample-every=-1 \
   --resume-from-step=24000
 ```
 
-Note `--nproc_per_node=4`: GPUs 1 and 2 are occupied by another user's vLLM server
-(Qwen3.5-27B, PIDs 361057/361058). GPU 0 now shows 3.8 GB used by someone else, so
-only **3,4,5,6,7 (5 GPUs)** are reliably free. Restarting on 4 ranks keeps the LR
-scaling identical to what step 24,000 was trained under — **changing GPU count would
-change total batch size and invalidate the resume.**
+### How the disk was fixed — moved, not pruned
+
+The incident section recommended pruning the 11 dead checkpoints (irreversible). **I
+did not prune anything.** `/data` had 3.0 TB free, so the whole 164 GiB was *moved*
+instead, and a symlink preserves the original path:
+
+```
+/home/rowel/.cache/nanochat/base_checkpoints
+  -> /data/rowel/nanochat_store/base_checkpoints.tmp
+```
+
+`/` went from **20 GB → 185 GB free (99% → 89%)**. Nothing was destroyed, so the
+"prune the 11 dead checkpoints" step is no longer needed at all. Note `NANOCHAT_BASE_DIR`
+was **not** used, because `get_tokenizer()` (`nanochat/tokenizer.py:266`) reads the
+tokenizer from the same `base_dir` — pointing it at an empty `/data/rowel/nanochat`
+would have stranded `tokenizer.pkl` and failed the run at startup. The symlink moves
+checkpoints only and leaves the tokenizer where it is.
+
+`--save-every` raised **2000 → 5000**, so the run needs ~51 rather than ~139
+checkpoints (746 GB rather than 2.03 TiB) on 3.0 TB of headroom. Cost: up to ~47 min
+of lost work per kill, which is cheap insurance at 43.6 h total.
+
+### Two environment problems fixed along the way
+
+1. **The venv was broken by the repo move.** `/home/rowel/baby-sandbox` no longer
+   exists, but 19 console scripts in `.venv/bin` still had shebangs pointing into it,
+   including `torchrun`. `nohup .venv/bin/torchrun` failed with "No such file or
+   directory" even though `ls` showed the file. Fixed `torchrun`'s shebang to
+   `/data/rowel/nanochat/.venv/bin/python`. **The other 18 are still stale** and will
+   fail the same way — `wandb`, `hf`, `huggingface-cli`, `isympy`, `kernels`, etc.
+   A `uv sync` would rebuild them.
+2. **torch 2.9's `torch.distributed.run` misparses `--run=`.** It reserves both
+   `--run-path` and `--run_path`, so `--run=headline-d28` dies with "ambiguous option"
+   *inside torchrun's own parser*, before `base_train.py` ever sees it. The `--`
+   separator is required. Worth remembering: the same failure looks like a typo in
+   `base_train.py`'s flags but is not.
+
+### Confirmed after resume
+
+- `Resuming optimization from step 24000`, `Step 24000 | Validation bpb: 0.885878`
+  — identical to the pre-kill value, so the optimizer state and LR schedule
+  (warmdown at 277,760) genuinely restored.
+- 2,018,511,234 params; 4 ranks ⇒ 4 AdamW shards ⇒ optimizer state is correctly
+  sharded and not silently re-sharded.
+- `Total batch size 32,768 => gradient accumulation steps: 1` — batch unchanged, so
+  the Finding 5 LR caveat still holds (not leaderboard-comparable).
+- Data loader resumed at `epoch 3 pq: 1 rg: 40` and advanced to `pq: 2 rg: 20`
+  without repeating the step-24,000 batch.
+- **43.8% bf16 MFU** (74k tok/s), above the 34.3% of the original run.
+- Step 25,000 saved: 6 model/optim/meta files, 14.62 GB, no disk pressure.
+  `/` still at 185 GB free.
+
+Note the repo path moved to `/data/rowel/nanochat` since the original launch; the
+old `cd /home/rowel/baby-sandbox/nanochat` in the commands above is stale.
+
+---
+
+## Still to do (Stages 3–6)
+
+- **Stage 2** — headline pretrain (d28, 2.02 B) — **RUNNING**, resumed from step
+  24,000 at 09:29 on GPUs 4,5,6,7. ETA ~43 h at the measured 43.8% MFU.
+
 - **Stage 3/4 re-run on d28** — the acceptance test that matters. d12 reached 100%
   format compliance but 0% exact tool calls; the hypothesis is that ~2.0 B fixes
   argument binding. Untestable until Stage 2 lands.
