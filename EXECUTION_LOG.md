@@ -642,4 +642,65 @@ of the 9.1 B consumed tokens were never trained on, and the same 429 M is re-rea
 
 **I have not acted on this.** Restarting Stage 2 is destructive and it is the
 user's call. The run continues at ~43.6% MFU; checkpoint 22,000 remains the best
-model and is intact on disk.
+model and is intact on disk.---
+
+## Finding 9 — Stage 2 restarted on 170 shards (2026-10-01 20:18)
+
+User authorised the restart. The old d28b run was killed at step 76,499 / 277,760
+and a clean run launched from step 0. Old checkpoints are untouched; step 22,000
+(val_bpb 0.883910) was copied to `/data/rowel/nanochat_store/best_pre_restart/`
+before the kill.
+
+### Correction to Finding 8's arithmetic
+
+Finding 8 stated 170 shards would give 3.52 B tokens / 2.6 passes. **That was
+wrong** — it extrapolated from the on-disk *compressed* shard size (~92 MB) instead
+of the uncompressed text. Measured from parquet metadata:
+
+| | |
+|---|---|
+| uncompressed text per shard | 252.4 MB |
+| tokens per shard @ 4.689 B/tok | 53.82 M |
+| 8 shards (old corpus) | **0.431 B** tokens |
+| 170 shards (new corpus) | **9.150 B** tokens |
+| run consumes | 9.1016 B tokens |
+| **passes: old / new** | **21.14 → 1.03** |
+
+So the fix is better than advertised, not worse: ~1 pass over 9.15 B rather than
+2.6 passes over 3.52 B. Confirmed independently from row groups: 170 shards hold
+14,049 row groups vs 662 for 8, a 21.2× ratio, giving ~270,578 steps/epoch against
+277,760 total steps.
+
+### Steps executed
+
+1. Downloaded 170 train shards + pinned val shard to
+   `/data/rowel/nanochat_store/base_data_climbmix` (15.6 GB, **not** `/`, which is
+   89% full). All 171 verified readable by pyarrow, 0 bad, 14.47 M rows.
+2. Built a **separate base dir** `v2/` so the old `d28b/` checkpoints survive:
+   `base_data_climbmix` → the new 171 shards; `tokenizer`, `base_eval`,
+   `task_data` symlinked to `~/.cache/nanochat` (avoids the tokenizer-stranding
+   trap — `get_tokenizer()` reads from the same base dir).
+3. Verified **no train/val leakage**: `parquets_iter_batched` uses
+   `parquet_paths[:-1]` for train and `[-1:]` for val, so `shard_06542` stays
+   held out. Val shard is **md5-identical** to the old one
+   (`de34f8e8...`), so val_bpb is directly comparable before/after.
+4. Preserved best checkpoint, killed old run, launched with
+   `NANOCHAT_BASE_DIR=.../v2`, `CUDA_VISIBLE_DEVICES=4,5,6,7`, new tags
+   `d28b-v2` / `headline-d28-v2` (wandb run `pgiv5whp`).
+
+### Verification that the fix took effect
+
+| check | result |
+|---|---|
+| training process env | `NANOCHAT_BASE_DIR=.../v2`, `CUDA_VISIBLE_DEVICES=4,5,6,7` |
+| parquet files visible | 171 (170 train + 1 val) |
+| epoch counter at step ~500 | **1** (old run was at epoch 7 by step 76k) |
+| throughput | 73.5k tok/s, **43.3% BF16 MFU** |
+| loss at step 110 | 5.97 — consistent with a from-scratch start |
+
+The epoch counter is the decisive check: the old run hit epoch 7 by step 76,499
+because it exhausted 8 shards repeatedly; the new run is still on epoch 1.
+
+### Cost of the fix
+
+26 h of GPU time discarded. New ETA ~34.4 h from 20:18.
