@@ -579,3 +579,67 @@ old `cd /home/rowel/baby-sandbox/nanochat` in the commands above is stale.
   never be presented as a deployment boundary. EnvScaler (ACL 2026 Findings) found
   the steepest gains going 0 → 20 environments, so breadth of cheap verifiable
   environments beats depth of one hard one.
+---
+
+## Finding 8 — the corpus is ~20× too small: 21 epochs over 429 M tokens
+
+Checked the dataset while auditing the resume, and found something bigger than the
+val_bpb upturn. **Stage 2 is training on 8 shards.**
+
+`python -m nanochat.dataset -n 8 -w 8` (Stage 0, line 132 of this log) pulled
+**8 train shards + 1 val shard**. Measured, not estimated:
+
+| | measured |
+|---|---|
+| shards present | 8 train (`shard_00000`–`00007`) + `shard_06542` (val) |
+| bytes of text | **2.264 B** chars |
+| bytes/token, 3,000 evenly-spread docs per shard | **4.689** (range 4.636–4.719) |
+| tokens in all 9 shards | **482.8 M** |
+| tokens in the 8 train shards (val held out) | **429.2 M** |
+| tokens this run consumes (277,760 × 32,768) | **9.1016 B** |
+| **passes over the train set** | **21.2** |
+
+The run has already reached **epoch 7** at step 66,275, measured from the log's own
+`epoch:` field (11,117 steps/epoch). By step 277,760 it ends near **epoch 26**.
+
+nanochat's own downloader message recommends `-n 170` for GPT-2 scale. The dataset
+holds **6,543 shards** (verified against the HF repo), so this was a choice, not a
+limit — 15.6 GB for 170 shards against 2.9 TB free.
+
+### Why this explains the val_bpb upturn
+
+Epoch 1 ended at step 11,117, epoch 3 at 32,923. The best val_bpb of the whole run
+is **0.883910 at step 22,000** — epoch 2. Everything since is worse:
+
+| step | epoch | val_bpb |
+|---|---|---|
+| 22,000 | 2 | **0.883910** ← best ever |
+| 27,000 | 3 | 0.885943 |
+| 35,000 | 4 | 0.908301 |
+| 46,000 | 5 | 0.921871 |
+| 60,000 | 6 | 0.923708 |
+| 70,000 | 7 | 0.936475 |
+| 74,500 | 7 | 0.937256 |
+
+val_bpb tracks epoch number and nothing else. It is **not** LR instability, as I
+suggested in the previous status: `lrm` is 1.00 throughout and warmdown does not
+begin until step 97,216, so the divergence was already complete before any decay
+could help. It is memorisation of a 429 M-token corpus, 21× over.
+
+The ~35% token loss to BOS-aligned cropping (`dataloader.py` docstring) means ~6 B
+of the 9.1 B consumed tokens were never trained on, and the same 429 M is re-read
+~21×.
+
+### Cost of fixing it
+
+- 170 shards ≈ 15.6 GB ⇒ 3.52 B tokens ⇒ **2.6 passes** instead of 21.2.
+- Download is minutes, not hours. Disk is not the constraint.
+- **But it invalidates the run.** The dataloader shards over parquet files by index,
+  so a resumed run would keep cycling the original 8 shards. Restarting from step 0
+  is required, discarding ~26 h of GPU time.
+- Everything already measured (Stage 0 tokenizer, Stage 1 d12, Stage 4 masking
+  audit) is unaffected — none of those results depend on corpus size.
+
+**I have not acted on this.** Restarting Stage 2 is destructive and it is the
+user's call. The run continues at ~43.6% MFU; checkpoint 22,000 remains the best
+model and is intact on disk.
