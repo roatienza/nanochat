@@ -704,3 +704,51 @@ because it exhausted 8 shards repeatedly; the new run is still on epoch 1.
 ### Cost of the fix
 
 26 h of GPU time discarded. New ETA ~34.4 h from 20:18.
+---
+
+## Finding 10 — Stage 2 v2 running clean, 12.2h in, already beats the old best
+
+Status as of **2026-10-02 08:26 PST**.
+
+| | |
+|---|---|
+| step | **58,999 / 277,760 (21.24%)** |
+| loss | 2.656 |
+| lrm | 1.00 (constant phase; warmdown starts step 97,216) |
+| throughput | 73.8k tok/s, **43.6% BF16 MFU** |
+| elapsed / ETA | 436.4m / **1618.5m = 27.0 h** |
+| epoch | **1** |
+| GPUs | 4,5,6,7 @ 96-97%, 38.5/40.9 GB each |
+| val_bpb @ 58,500 | **0.826257** |
+
+### The restart was the right call — confirmed by the val curve
+
+Monotone, no divergence:
+
+| step | 2.5k | 10k | 20k | 30k | 40k | 50k | 58.5k |
+|---|---|---|---|---|---|---|---|
+| val_bpb | 1.0256 | 0.9133 | 0.8728 | 0.8527 | 0.8402 | 0.8320 | **0.8263** |
+
+The old 8-shard run's best-ever val_bpb was **0.883910** (step 22,000), and it was
+already deteriorating from there. The v2 run passed that at **~step 19,000** and has
+improved a further 0.058 since. So the 26 h discarded bought a real gain, not just
+a reset: v2 is 0.058 bpb better than anything the v1 run ever produced, and still
+falling. v1 best preserved in `nanochat_store/best_pre_restart/`.
+
+### Interpretation
+
+Finding 8 is now confirmed by outcome rather than by inference: 21.2 passes over a
+429M-token corpus caused memorisation, not LR instability. On 9.15B tokens at ~1
+pass, val_bpb is still improving monotonically at 21% through the schedule.
+Warmdown at step 97,216 should add further gains.
+
+### Housekeeping
+
+- `base_checkpoints.tmp/` (316 GB, d12 + d28b) is a **stale** relocation leftover
+  from the Sep 30 disk fix; the live v1 checkpoints are in
+  `nanochat_store/base_checkpoints/`. Left in place, not deleted — same reasoning
+  as the earlier "move, do not prune" call.
+- `/data` at 80% (2.7 TB free). Remaining saves: 45 x 2.28 GB = **103 GB**. Fits.
+- `/` at 89% (195 GB free) — unchanged, untouched.
+- No watchdog on this run. A kill would again stop it silently; checkpoints every
+  5,000 steps are the only recovery point.
