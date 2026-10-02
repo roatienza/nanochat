@@ -809,3 +809,71 @@ absent. Warmdown (step 97,216) is still 25,100 steps away and should add more.
 - **Log location correction:** this run has no `out/headline-d28-v2/` directory.
   Output goes to `nanochat/wandb/run-20261001_201809-pgiv5whp/files/output.log`.
   Earlier status updates pointed at `out/*/train.log`, which does not exist.
+## Finding 12: the logged ETA understates real time by 40% — eval, not training
+
+Status point: 2026-10-02 15:46 PST. Stage 2 v2 running at **step 94,499 / 277,760 (34.02%)**,
+val_bpb **0.811418** @ 94,000. GPUs 4-7 busy. Run healthy.
+
+### Correction 1 — the ETA I have been quoting is wrong, and always was
+
+I repeatedly reported "eta ~22-27 h" copied straight from the log line
+`| eta: 1355.5m`. That is not a real ETA. It derives from `total_training_time`,
+which accumulates only `dt` from the forward/backward loop and excludes
+validation, checkpoint saves, and wandb logging. Measured against the wall clock
+the discrepancy is large and constant:
+
+| basis | per step | per 5,000 steps |
+|---|---|---|
+| log `dt` / eta field | 0.4438 s | 37.0 min |
+| actual wall clock | 0.7423 s | 61.7 min |
+| undercount | **40.2%** | 24.7 min per 5k |
+
+Wall clock is measured from process start (20:17:58 Oct 1, `ps` etimes 69,663 s)
+against the step-90,000 checkpoint mtime (14:51:30 Oct 2). Every consecutive
+checkpoint delta is 61.6-61.8 min, so this is a stable cost, not a one-off stall.
+
+**Real remaining time from 94,499: ~37.9 h**, not 22.6 h.
+Warmdown begins at step 97,216 — 2,717 steps away, ~34 min.
+
+### Correction 2 — the cause is the eval config; a plan defect, not a transient
+
+`--eval-every=500` with the default `--eval-tokens=80*524288` means every
+validation scores **41.9 M tokens**, while one training step consumes
+**32,768 tokens**. Per 5,000 train steps that is 419 M eval tokens against
+163 M train tokens — **2.56x more evaluation than training**. Eval is
+forward-only (~1/3 the cost of fwd+bwd), so it costs ~0.85x a full training
+step, predicting a wall/dt ratio of 1.85 against 1.67 measured. Eval accounts
+for essentially the entire gap; checkpoint saves and wandb logging are minor.
+
+This fixed cost should have been caught when Stage 2 launched and was not.
+
+### Progression — the restart remains clearly vindicated
+
+| step | 50k | 60k | 70k | 80k | 90k | 94k |
+|---|---|---|---|---|---|---|
+| val_bpb | 0.8320 | 0.8257 | 0.8206 | 0.8166 | 0.8132 | **0.8114** |
+
+v1 best was **0.883910** (step 22,000 of the original killed run). v2 is
+**0.0725 ahead** of that, still monotone, still epoch 1, no turnaround.
+
+### Verification
+
+- Live process env read from `/proc/1297981/environ` and `/proc/1299407/environ`:
+  `NANOCHAT_BASE_DIR=/data/rowel/nanochat_store/v2`, `CUDA_VISIBLE_DEVICES=4,5,6,7`.
+- GPU mapping by UUID: PIDs 1299407-1299410 hold GPUs 4,5,6,7.
+- `/data` has 2.6 TB free; v2 checkpoints 246 GB through step 90,000. Remaining
+  37 saves x 14.4 GB = 533 GB. Not a disk risk.
+- `/data/rowel/nanochat_store/base_checkpoints.tmp/` — **not stale, correcting my
+  earlier characterisation.** It is the *live* v1 d28b checkpoint store written
+  by resumed run 4g748kis through step 75,000 (Oct 1 19:57), plus the d12 stage-1
+  final: 314 GB d28b + 1.9 GB d12. I called this "stale leftovers" in three
+  previous updates. It is active data moved during the disk fix and must not be
+  deleted. The `base_checkpoints` symlink still points there, so v1 stays resumable.
+
+### Still open
+
+- **No watchdog.** Unchanged. A kill stops the run silently; 5,000-step
+  checkpoints are the only recovery point.
+- ETA is now quoted in wall-clock terms. If the remaining ~38 h should go faster,
+  `--eval-tokens` is the lever: cutting it 4x would recover roughly 28 h. That
+  requires restarting from a checkpoint, so it has not been done.
