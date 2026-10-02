@@ -752,3 +752,60 @@ Warmdown at step 97,216 should add further gains.
 - `/` at 89% (195 GB free) — unchanged, untouched.
 - No watchdog on this run. A kill would again stop it silently; checkpoints every
   5,000 steps are the only recovery point.
+
+---
+
+## Finding 11: Stage 2 v2 at 25.96%, val_bpb 0.8198 — 0.064 ahead of v1 best
+
+**Recorded:** 2026-10-02 11:15 PST. Run `headline-d28-v2` (wandb `pgiv5whp`).
+
+| | |
+|---|---|
+| **Step** | **72,114 / 277,760 (25.96%)** |
+| loss | 2.694 |
+| lrm | 1.00 (constant phase; warmdown starts step 97,216) |
+| throughput | 73.9k tok/s, **43.6% BF16 MFU** |
+| elapsed / ETA | 533.4m / **1521.3m = 25.4 h** |
+| epoch | **1** (whole run; log's own counter, single unique value in file) |
+| GPUs | 4,5,6,7 @ 99-100%, 38.5/40.9 GB each |
+| **val_bpb @ 72,000** | **0.819828** ← best of the run so far |
+
+### Progression vs v1
+
+| step | 5k | 10k | 20k | 30k | 40k | 50k | 60k | 70k | 72k |
+|---|---|---|---|---|---|---|---|---|---|
+| val_bpb | 0.9638 | 0.9133 | 0.8728 | 0.8527 | 0.8402 | 0.8320 | 0.8257 | 0.8206 | **0.8198** |
+
+v1's best-ever was **0.883910** at step 22,000 and rising thereafter. v2 passed
+that at roughly step 19,000 and is now **0.064 bpb better** than anything v1
+produced. The curve is monotone with no turn — the v1 turnaround signature is
+absent. Warmdown (step 97,216) is still 25,100 steps away and should add more.
+
+### Verification notes
+
+- **Epoch math corrected.** An intermediate check of mine divided by v1's stale
+  11,117 steps/epoch and printed "epoch 6.49". That is wrong: the log's own
+  `epoch:` field is the single unique value `1` across all 145 logged steps, and
+  170 train shards hold roughly 270,578 steps/epoch against 277,760 total. The
+  log counter is the authority; the stale constant is not.
+- **Val shard unchanged and md5-identical** to the v1 run, so val_bpb is
+  directly comparable before and after the restart.
+- Checkpoints through **70,000** written and verified on disk
+  (`model_070000.pt` plus 4 optim shards; 6.31 GB plus 4 x 2.08 GB).
+- Process env read directly from `/proc/1297981/environ`: `NANOCHAT_BASE_DIR=
+  /data/rowel/nanochat_store/v2`, `CUDA_VISIBLE_DEVICES=4,5,6,7`. Confirms the
+  live process, not just the launching shell.
+- 170 train shards + 1 val shard present in `v2/base_data_climbmix`.
+
+### Housekeeping
+
+- **Saves: 14 of 55 done, 41 remaining = 517 GB needed.** `/data` has 2.7 TB
+  free, so this run cannot fill the disk. (An earlier note of mine inverted this
+  arithmetic and printed a negative count; the figures here are the corrected ones.)
+- `base_checkpoints.tmp/` (316 GB) still stale, still not deleted.
+- `/data/rowel/nanochat_store/v2` is 191 GB — live d28b-v2 checkpoints.
+- **No watchdog.** Unchanged single point of failure: a kill stops the run
+  silently and 5,000-step checkpoints are the only recovery point.
+- **Log location correction:** this run has no `out/headline-d28-v2/` directory.
+  Output goes to `nanochat/wandb/run-20261001_201809-pgiv5whp/files/output.log`.
+  Earlier status updates pointed at `out/*/train.log`, which does not exist.
