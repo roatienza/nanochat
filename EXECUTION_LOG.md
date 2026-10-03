@@ -63,3 +63,58 @@ STILL OPEN
     the only recovery point is the last 5,000-step checkpoint.
   - --eval-tokens untuned: 2.56x training tokens. A 4x cut would recover ~28 h,
     but needs a restart from checkpoint. Not done without explicit approval.
+===============================================================================
+2026-10-03 12:40 PDT — Finding 16
+===============================================================================
+
+STATUS
+  Stage 2 v2 (headline d28)  195,940 / 277,760 steps = 70.55%
+  loss 2.547   lrm 0.48 (warmdown, active since step 97,216)
+  73.9k tok/s   43.6% BF16 MFU   epoch 1 (of ~1.03)
+  GPUs 4,5,6,7 @ 100%, 38.5 / 40.9 GB each. PIDs 1299407-1299410, live,
+  etimes 145,245 s. uuid-matched to devices 4-7.
+
+VALIDATION
+  val_bpb 0.750556 @ 195,500 — run best, still falling.
+  Curve 189k -> 195.5k, every eval:
+    189000 0.753907 | 190000 0.753390 | 191000 0.752855 | 192000 0.752270
+    192500 0.752285 | 193000 0.751896 | 193500 0.751427 | 194000 0.751238
+    194500 0.751183 | 195000 0.750805 | 195500 0.750556
+  Single blip at 192,500 (+0.000015) is noise. Monotone otherwise; Finding 8
+  holds. ~55,000 steps of LR decay left, so a real tail gain is still expected.
+
+VS V1
+  v1 best 0.885878 @ 24,000 (106 validations, resume_24000.log). v2 is
+  0.135322 bpb ahead. v1 had deteriorated to 0.939570 by step 76,723, where it
+  died. Gap trajectory: 0.064 @72k, 0.125 @176k, 0.132 @189k, 0.135 @195.5k.
+
+ETA (wall clock, NOT the log's eta field)
+  Log says 605.2m = 10.1 h. Wrong by ~40% — total_training_time accumulates
+  only fwd/bwd dt, excludes eval, saves, wandb. Finding 12 stands.
+    process etimes: 145,245 / 195,940 = 0.7413 s/step
+    ckpt mtime deltas: ~62 min per 5,000-step block, consistent all run
+  81,820 steps left = 16.85 h  ->  Sun Oct 4, 05:29 PDT.
+
+CHECKPOINTS
+  39 model_*.pt through model_195000.pt (12:29) + 156 optim_*.pt
+  Path: /data/rowel/nanochat_store/v2/base_checkpoints/d28b-v2/
+  Store 532 GB.  / 191 GB free (89%).  /data 2.3 TB free (83%).
+  16 saves left x 14.4 GB = 230 GB. No disk risk.
+
+CORRECTIONS TO EARLIER ENTRIES
+  - Log path. It is /data/rowel/serve_logs/stage2/restart170.log, not
+    nanochat/out/. out/ does not exist. Every prior status in this repo cited
+    out/ as the source. The figures were still correct — same log — but the
+    recorded provenance was wrong. Located via /proc/1299407/fd/1.
+  - Val field offset. Key is "Step N | Validation bpb: X", value in $6.
+    Earlier spot-checks used $4/$5 and returned "Validation" / "bpb:" as the
+    minimum. Caught and redone; every number above comes from $6.
+  - base_checkpoints.tmp/ (316 GB) is v1's live store, still not stale.
+    Do not delete.
+
+STILL OPEN
+  - No watchdog. Single point of failure, unchanged. Killed once already
+    (Sep 30, full disk — since fixed by relocating store to /data).
+  - --eval-tokens untuned: 2.56x training tokens, ~40% of wall clock.
+    A 4x cut would recover ~28 h but needs a restart from checkpoint.
+    Not done without explicit approval.
