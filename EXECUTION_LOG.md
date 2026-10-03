@@ -118,3 +118,63 @@ STILL OPEN
   - --eval-tokens untuned: 2.56x training tokens, ~40% of wall clock.
     A 4x cut would recover ~28 h but needs a restart from checkpoint.
     Not done without explicit approval.
+
+===============================================================================
+2026-10-03 19:51 PDT — Finding 17: Stage 2 v2 at 83.06%, val_bpb 0.733716
+===============================================================================
+
+STATUS
+  Stage 2 v2 (headline d28, 2.019 B params)  230,699 / 277,760 = 83.06%
+  loss 2.418 (last logged line), lrm 0.30 (warmdown, active since step 97,216)
+  73.5k tok/s, 43.4% BF16 MFU, epoch 1 (of ~1.03)
+  GPUs 4,5,6,7 @ 99-100%, 38,546 / 40,960 MiB each (GPU7 38,034).
+  PIDs 1299407-1299410 live, etimes 171,205 s, UUID-matched to devices 4-7.
+  Env from /proc/1299407/environ: CUDA_VISIBLE_DEVICES=4,5,6,7
+                               NANOCHAT_BASE_DIR=/data/rowel/nanochat_store/v2
+
+VALIDATION — 462 logged evals, run best 0.733716 @ 230,500
+  Best per 25k block:
+       0-25k  0.861983     125-150k 0.774648
+     25-50k  0.832547     150-175k 0.761076
+     50-75k  0.818663     175-200k 0.748355
+    75-100k  0.808570     200-225k 0.736429
+   100-125k  0.789909     225-250k 0.733716  <- run best
+  Still monotone all the way down. No turnaround. Finding 8 holds.
+  Last 8 evals: 228500 0.734558 | 229000 0.734293 | 229500 0.733941 |
+               230000 0.733841 | 230500 0.733716
+
+VS V1 (resume_24000.log, 106 evals)
+  v1 best 0.885878 @ 24,000. v1's last logged eval before death: 0.939570
+  @ 76,500, already deteriorating; died at 76,723 steps (27.6%).
+  v2 is 0.152162 bpb ahead of v1's best. Gap trajectory:
+    0.064 @72k -> 0.125 @176k -> 0.132 @189k -> 0.135 @195.5k ->
+    0.139 @205k -> 0.147 @215k -> 0.152 @230.5k. Widening monotonically.
+
+ETA — wall clock, NOT the log's eta field
+  Log says 348.3m = 5.8 h. Wrong by ~67%. total_training_time accumulates
+  only forward/backward dt, excluding eval, saves and wandb. Finding 12 stands.
+    process etimes: 171,205 / 230,699 = 0.74211 s/step = 44.53 min per 5k
+    checkpoint mtime deltas: 62 min per 5,000-step block, consistent all run
+  47,061 steps left = 9.70 h  ->  Sun Oct 4, 05:33 PDT.
+
+CHECKPOINTS
+  46 model_*.pt through model_230000.pt (19:43) + 4 optim shards per save
+  Path: /data/rowel/nanochat_store/v2/base_checkpoints/d28b-v2/
+  v2 store 627 GB. / 192 GB free (89%). /data 2.2 TB free (84%).
+  9 saves left x 14.4 GB = 130 GB. No disk risk.
+
+  The Sep 30 kill cannot recur: root fs then had 18 GB free against a 14.62 GB
+  checkpoint write (6.31 GB model + 4 x 2.08 GB optim). Now 192 GB free on /
+  and the store lives on /data.
+
+STILL OPEN
+  - No watchdog. Single point of failure, unchanged. Killed once already
+    (Sep 30, full disk — since fixed by relocating the store to /data). A kill
+    still stops the run silently; the only recovery point is the last 5,000-
+    step checkpoint. Now largely moot for this run: only 9.7 h remain, so even
+    a full loss costs one restart from model_230000.pt.
+  - --eval-tokens untuned: 2.56x training tokens, ~40% of wall clock.
+    A 4x cut would recover ~28 h but needs a restart from checkpoint.
+    Not done without explicit approval. Now moot for this run for the same
+    reason — 9.7 h remain, a restart costs more than it saves. Do NOT
+    action this on the current run.
