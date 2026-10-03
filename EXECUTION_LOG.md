@@ -178,3 +178,86 @@ STILL OPEN
     Not done without explicit approval. Now moot for this run for the same
     reason — 9.7 h remain, a restart costs more than it saves. Do NOT
     action this on the current run.
+
+===============================================================================
+2026-10-04 07:55 PDT — Finding 18: Stage 2 v2 COMPLETE at step 277,760
+===============================================================================
+
+STAGE 2 IS DONE. Not a crash — verified.
+
+  The process table shows no train.py. Before calling that a death I checked for
+  a traceback: there is none. The log ends with a clean wandb teardown at 05:39,
+  and meta_277760.json records step 277760 with min_val_bpb matching the log.
+  The job completed the full schedule.
+
+FINAL RESULT — d28, 2.019 B params
+  step            277,760 / 277,760  = 100%
+  val_bpb         0.7154372433401933  <- run best, attained on the LAST step
+  CORE metric     0.2982
+  train loss 2.363   lrm 0.05032   (final_lr_frac 0.05, warmdown complete)
+  throughput 73,655 tok/s   MFU 43.47% BF16
+  training time  2,055.27 m fwd/bwd ; 33.7 h wall clock
+  peak memory    34,071.77 / 40,960 MiB (83%)
+  epoch 1.03 (each shard seen ~once)   557 evals
+  checkpoint     model_277760.pt + 4 optim shards, written 05:39
+
+VALIDATION — best per 25k block, re-derived programmatically
+     0- 25k  0.861983 @ 24,500      125-150k  0.774648 @ 149,000
+    25- 50k  0.832547 @ 49,500      150-175k  0.761076 @ 174,500
+    50- 75k  0.818663 @ 74,500      175-200k  0.748355 @ 199,500
+    75-100k  0.808570 @ 99,500      200-225k  0.736429 @ 224,500
+   100-125k  0.789909 @ 124,500     225-250k  0.725395 @ 249,500
+                                   250-275k  0.716312 @ 274,500
+                                        275k+  0.715437 @ 277,760  <- best
+  Strictly monotone? No. 29 of 557 steps ticked up, mean +0.000098, max
+  +0.000346. All noise; last blip at 75,500. Descending throughout warmdown.
+  Finding 8 holds.
+
+  527 of 557 evals set a new running best. Total improvement 2.4542 bpb
+  (3.169678 at step 0 -> 0.715437). Warmdown began at step 97,216; best before
+  it was 0.810519 at 96,500, so warmdown delivered 0.095082 of that. The LR
+  tail was still paying off at the final step.
+
+VS V1 (resume_24000.log)
+                        v1                       v2
+  steps        76,723 (27.6%)            277,760 (100%)
+  best val_bpb 0.885878 @ 24,000         0.715437 @ 277,760
+  val at death 0.939570 @ 76,500 (worse)
+  tokens seen  2.52 B (21.1 passes)      9.102 B (1.03 passes over 9.150 B)
+  v2 is 0.170441 bpb better than v1's best = 19.2% lower, on 3.6x the tokens.
+
+WHY V2 WON — corpus size, not the LR schedule
+  v1 pulled 8 shards = 0.431 B tokens against a 2.019 B-param model at
+  param_data_ratio 8: 21.1 passes over the same data. Val turned up at ~40,000
+  and reached 0.939570 by the step it died. v2 pulled 170 shards = 9.150 B
+  tokens, 1.03 passes, became a ~1-epoch run, improved to the last step.
+  I misdiagnosed this as LR-schedule trouble before the Sep 30 restart, costing
+  ~12 h of redone work. Finding 8 (no warmdown turnaround) had been re-derived
+  in the log but never reconciled against Finding 12 (dataset sizing).
+
+OPEN ITEMS — both now moot, the run is finished
+  - No watchdog: moot.
+  - --eval-tokens untuned at 2.56x training tokens (~40% of wall clock): moot
+    for this run. Still worth setting on Stage 3+ runs.
+  Disk: / 192 GB free, /data 2.2 TB free. Sep 30 kill cannot recur.
+
+CORRECTIONS TO EARLIER ENTRIES
+  Three errors in my first draft of STATUS_2026-10-04.md, all caught by
+  re-deriving from the log instead of carrying notes forward:
+    1. Claimed all 557 evals improved. False — 29 ticked up.
+    2. Tail gain stated as 0.2132 bpb. Actual 0.095082 (0.810519 at 96,500 is
+       the pre-warmdown baseline, not a step-0 baseline).
+    3. Duplicated the 125-150k row in the curve table.
+  The "62 min per 5k block" rate in prior entries was measured on a mid-run
+  window including eval load. Final span (Oct 3 08:40 to Oct 4 05:39) is
+  20.98 h / 47,061 steps = 48.1 min per 5k. Both correct for their windows.
+
+SOURCES
+  /data/rowel/serve_logs/stage2/restart170.log
+  /data/rowel/nanochat_store/v2/base_checkpoints/d28b-v2/meta_277760.json
+  /data/rowel/serve_logs/stage2/resume_24000.log
+  wandb run pgiv5whp
+
+NEXT
+  Stage 3 (SFT) is next in PLAN.md. Not started. Needs the d28 checkpoint
+  model_277760.pt and a fresh wandb run.
