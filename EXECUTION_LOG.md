@@ -261,3 +261,29 @@ SOURCES
 NEXT
   Stage 3 (SFT) is next in PLAN.md. Not started. Needs the d28 checkpoint
   model_277760.pt and a fresh wandb run.
+
+========================================================================
+STAGE 3 (SFT) — COMPLETE                                    2026-10-04 17:05
+========================================================================
+  Run v4 on GPUs 1,3,5,7. 15,028 steps, 123.5 min, 0 NaN.
+  Final val_bpb 0.308864 (model_015028.pt). Clean exit.
+
+  Killed runs: 1-GPU (disk-full), v3 (SIGINT @ 8,164; NaN was
+  logging-only, weights never poisoned).
+
+  RETRACTION: every "% complete" figure I reported for Stage 3 used
+  a fabricated denominator. meta records num_iterations=-1, so
+  chat_sft.py:465 never fires and the run stops on data exhaustion.
+  The 15,012 "total" was an artifact of approx_progress, an estimate.
+  Real final step: 15,028.
+
+  NaN fix: f060833 in nanochat (local only, unpushed).
+
+SOURCES
+  /data/rowel/serve_logs/stage3/sft_d28_v4_4gpu.log
+  /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-v2/meta_015028.json
+  wandb run tpkzb8yr
+
+NEXT
+  Stage 4 (tool calling) — built and verified in an earlier session
+  (hermes-v1, masking verified token-by-token). Ready to launch.
