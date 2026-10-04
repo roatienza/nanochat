@@ -58,6 +58,7 @@ parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of 
 parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=200, help="evaluate val bpb every N steps (-1 = disable)")
+parser.add_argument("--save-every", type=int, default=-1, help="save checkpoint every N steps (-1 = only the final one)")
 parser.add_argument("--eval-tokens", type=int, default=40*524288, help="number of tokens to evaluate val loss on")
 parser.add_argument("--chatcore-every", type=int, default=200, help="evaluate ChatCORE metric every N steps (-1 = disable)")
 parser.add_argument("--chatcore-max-cat", type=int, default=-1, help="max problems per categorical task for ChatCORE")
@@ -185,9 +186,9 @@ def _unslice_or_replicate(exp_parts, sq_parts, expected):
     return torch.cat(exp_parts, 0), torch.cat(sq_parts, 0)
 
 
-def _rebuild_fullsize_optimizer_state(checkpoint_dir, step, saved_world, expected_shapes):
+def _rebuild_fullsize_optimizer_state(checkpoint_dir, step, saved_world, expected_shapes, rank=0, world_size=1):
     """
-    Rebuild full-size optimizer moments from a sharded multi-rank checkpoint.
+    Rebuild optimizer moments for THIS rank from a checkpoint saved at a different world size.
 
     nanochat shards optimizer state two different ways, so a loader running at a
     different world size than the one that saved the checkpoint cannot copy a shard
@@ -199,7 +200,14 @@ def _rebuild_fullsize_optimizer_state(checkpoint_dir, step, saved_world, expecte
         (<1024 numel) are all-reduced, so every rank saved an identical full copy.
       * Muon groups: each rank holds a contiguous, zero-padded chunk of the group's
         params, so concatenating gives chunk_size*S rows of which only len(params)
-        are real. Trim to len(params).
+        are real.
+
+    Merging is only half the job: optim.py never looks at a full-size moment. At
+    step time it slices the live parameter to this rank's shard
+    (`p[rank*N/W:(rank+1)*N/W]`, `optim.py:334`) and passes that slice straight to the
+    fused kernel alongside the state. So the state must be re-sliced to the *current*
+    world size too, or the fused AdamW kernel dies on a broadcast error
+    (exp_avg [32768,1792] vs param [16384,1792]).
 
     `expected_shapes` holds the live parameter shapes keyed the same way
     optimizer.state_dict() keys its state. Comparing against them is what
@@ -246,6 +254,59 @@ def _rebuild_fullsize_optimizer_state(checkpoint_dir, step, saved_world, expecte
     return merged
 
 
+def _reshard_optimizer_state(state, rank, world_size, expected_shapes):
+    """
+    Cut a full-size optimizer state down to what THIS rank owns at `world_size`.
+
+    optim.py stores no full-size moments: `_compute_adamw` slices the live parameter
+    to rows [rank*N/W, (rank+1)*N/W) and hands that slice plus the state to the fused
+    kernel, and `_compute_muon` addresses `momentum_buffer` by this rank's chunk of the
+    group. Feeding either a full-size tensor raises a broadcast error inside the
+    compiled kernel, so re-shard here rather than trusting the caller.
+    """
+    out = {}
+    for key, val in state.items():
+        if not isinstance(val, dict) or not ({"exp_avg", "momentum_buffer"} & set(val)):
+            out[key] = val
+            continue
+        if "exp_avg" in val:  # AdamW
+            exp_avg, exp_avg_sq = val["exp_avg"], val["exp_avg_sq"]
+            expected = expected_shapes.get(key)
+            # Small (<1024 numel) params are all-reduced, so every rank holds the full
+            # tensor and must keep it (optim.py:331). Only the large row-sliced ones are
+            # cut, and only when they still hold full-size rows (i.e. we just merged them).
+            if expected is not None and exp_avg.numel() >= 1024 and world_size > 1:
+                rows = expected[0] // world_size
+                if exp_avg.shape[0] == expected[0]:
+                    lo = rank * rows
+                    exp_avg = exp_avg[lo:lo + rows]
+                    exp_avg_sq = exp_avg_sq[lo:lo + rows]
+            out[key] = {"step": val["step"], "exp_avg": exp_avg, "exp_avg_sq": exp_avg_sq}
+        else:  # Muon: each rank owns a contiguous chunk of the group's params
+            mom = val["momentum_buffer"]
+            mom2 = val["second_momentum_buffer"]
+            expected = expected_shapes.get(key)
+            n_real = expected[0] if expected is not None else mom.shape[0]
+            chunk_size = (n_real + world_size - 1) // world_size
+            if world_size > 1 and mom.shape[0] == n_real:
+                start = rank * chunk_size
+                # optim.py:384-387 allocates chunk_size rows on EVERY rank and zero-fills
+                # the tail, so the last ranks that own nothing still get a full buffer.
+                # Slicing alone would hand them a short one.
+                keep = min(chunk_size, max(0, n_real - start))
+                head = mom[start:start + keep]
+                head2 = mom2[start:start + keep]
+                if keep < chunk_size:
+                    # second_momentum_buffer's trailing dims differ from the momentum's
+                    # (optim.py:384), so pad each against its own shape.
+                    mom = torch.cat([head, head.new_zeros((chunk_size - keep, *head.shape[1:]))], 0)
+                    mom2 = torch.cat([head2, head2.new_zeros((chunk_size - keep, *head2.shape[1:]))], 0)
+                else:
+                    mom, mom2 = head, head2
+            out[key] = {"momentum_buffer": mom, "second_momentum_buffer": mom2}
+    return out
+
+
 if args.load_optimizer:
     optimizer_data = load_optimizer_state("base", device, rank=ddp_rank, model_tag=args.model_tag, step=args.model_step)
     if optimizer_data is not None:
@@ -270,6 +331,11 @@ if args.load_optimizer:
             print0(f"Optimizer shard saved at world_size={saved_world}, SFT running at {ddp_world_size}: "
                    f"rebuilding full-size moments from {saved_world} shards")
             optimizer_data = _rebuild_fullsize_optimizer_state(ckpt_dir, args.model_step, saved_world, expected_shapes)
+        # Whether we just merged shards or loaded one directly, the live optimizer only
+        # ever holds this rank's slice of each moment (optim.py:334, :377). Re-shard so a
+        # merged full-size state cannot reach the fused kernel.
+        optimizer_data["state"] = _reshard_optimizer_state(
+            optimizer_data["state"], ddp_rank, ddp_world_size, expected_shapes)
         base_lrs = [group["lr"] for group in optimizer.param_groups]
         optimizer.load_state_dict(optimizer_data)
         del optimizer_data
@@ -459,6 +525,7 @@ def get_muon_momentum(it):
 # Training loop
 x, y = next(train_loader) # prefetch the very first batch of data
 min_val_bpb = float("inf")
+val_bpb = None # stays None until the first eval pass runs
 smooth_train_loss = 0 # EMA of training loss
 ema_beta = 0.9 # EMA decay factor
 total_training_time = 0 # total wall-clock time of training
@@ -524,8 +591,10 @@ while True:
         })
         model.train()
 
-    # save checkpoint at the end of the run (all ranks participate so each saves its optimizer shard)
-    if last_step:
+    # save checkpoint: at the end of the run, or every save_every steps, except at the first step
+    # (mirrors base_train.py:477 -- without this, SFT only ever writes the final checkpoint,
+    # so any death mid-run loses the entire stage)
+    if last_step or (step > 0 and args.save_every > 0 and step % args.save_every == 0):
         output_dirname = args.model_tag if args.model_tag else f"d{depth}" # e.g. d12
         checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
         save_checkpoint(
