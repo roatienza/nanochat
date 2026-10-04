@@ -287,3 +287,47 @@ SOURCES
 NEXT
   Stage 4 (tool calling) — built and verified in an earlier session
   (hermes-v1, masking verified token-by-token). Ready to launch.
+
+========================================================================
+STAGE 4 (TOOL CALLING) — RUNNING                          2026-10-04 23:15
+========================================================================
+  GPUs 3,4,5,7.  4-GPU, device-batch-size 2, grad_accum 2, batch identical
+  to Stage 3 v4.  train dt 629 ms, 52.1k tok/s, 30.7% MFU.
+
+  Stage 3 already trained tool-calling (hermes x2), so this stage could have
+  been called done.  Measured on the Stage 3 checkpoint instead: 0.0% exact
+  match, 46.5% right function name, 2.5% right call count.  Failures are
+  verbatim-copy failures on the JSON arguments, and hermes has only 1,036
+  unique train examples.  The constraint is data volume, not compute.
+
+  xLAM-60k (named in PLAN.md) still gated: "Access denied. This repository
+  requires approval."  Substituted ToolACE: 11,300 dialogs / 26,507 APIs,
+  Apache-2.0, ungated -> 8,957 train / 182 val, 8.6x hermes.
+
+  Masking verified on ALL 8,957 examples.  Four probe designs; v1/v2/v3
+  false-alarmed 51/6/11 times on legitimate target content (argument keys named
+  "parameters", enum values, URL templates).  v4 provenance probe: PASS.
+
+  Fixed a latent bug from my own earlier work: _rebuild_fullsize_optimizer_state
+  formatted args.model_step (None when --model-step omitted) into a filename.
+  Only fires when SFT world size != pretrain world size, so Stage 3 missed it.
+
+  CORRECTION: first attempt wasted 1,250 steps.  Default --eval-tokens
+  20971520 => 1280 eval micro-steps => 263 s per eval vs 0.489 s/step train,
+  i.e. 68% of wall-clock spent evaluating.  Relaunched at 4194304.  This is the
+  dt-vs-wallclock error I made twice before, caught this time by measuring the
+  eval boundary instead of reading the field.
+
+  UNEXPLAINED: dt rose 492 -> 629 ms with only --eval-tokens changed, which
+  cannot affect fwd/bwd.  Likely CPU contention from PID 765926
+  (/data/rowel/robot-decisions, train_lora.py, 718% CPU) -- a different
+  project, not mine, left untouched.  Ranks all at 99.3% CPU / 99-100% GPU.
+
+SOURCES
+  /data/rowel/serve_logs/stage4/stage4.log
+  nanochat commit dccaa9a
+  /data/rowel/reasoner-model/STATUS_2026-10-04_STAGE4.md
+
+NEXT
+  Stage 4 acceptance: eval_toolcalling.py held-out, compare to the 0.0%
+  baseline recorded above.  Then Stage 5 (chat_rl.py on GSM8K).
