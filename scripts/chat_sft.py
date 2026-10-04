@@ -627,9 +627,11 @@ while True:
     # evaluate the gradient
     synchronize()
     t0 = time.time()
+    accum_train_losses = []
     for micro_step in range(grad_accum_steps):
         loss = model(x, y)
         train_loss = loss.detach() # for logging
+        accum_train_losses.append(train_loss)
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -663,7 +665,18 @@ while True:
     step += 1
 
     # logging
-    smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss.item() # EMA the training loss
+    # Average the loss over the micro-batches that actually had supervised tokens.
+    # An all-padding micro-batch yields loss=nan and an all-zero gradient (CE 'mean'
+    # divides by a zero valid-token count), so it must not enter the average. A single
+    # nan here is otherwise sticky forever -- ema_beta=0.9 never washes it out -- and it
+    # masquerades as a dead run long after every weight and val metric is healthy.
+    finite = [v.item() for v in accum_train_losses if torch.isfinite(v)]
+    if not finite:
+        raise RuntimeError(
+            f"step {step}: every one of the {len(accum_train_losses)} micro-batches had no "
+            f"supervised tokens (all-NaN loss). This is a data-packing bug, not a run to continue.")
+    train_loss_item = sum(finite) / len(finite)
+    smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_item # EMA the training loss
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1)) # debias the EMA
     pct_done = 100 * progress
     tok_per_sec = int(args.total_batch_size / dt)
