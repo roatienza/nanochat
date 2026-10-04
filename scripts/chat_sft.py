@@ -141,9 +141,135 @@ optimizer = model.setup_optimizer(unembedding_lr=args.unembedding_lr, embedding_
 # pretrained values. Since pretraining warmdown brings LRs to ~0, we must save and
 # restore our fresh SFT LRs after loading.
 base_dir = get_base_dir()
+
+def _infer_saved_world_size(state, expected_shapes, step, checkpoint_dir=None, model_tag=None):
+    """
+    Infer how many ranks an optimizer checkpoint was sharded across.
+
+    Checkpoints written before `save_checkpoint` recorded `world_size` carry no such
+    key. For those, detect it from the data: nanochat reduce-scatters the AdamW moments
+    of large params (>=1024 numel), so a sharded checkpoint stores a 1/N row-slice of
+    wte/lm_head. N = live_rows / slice_rows. Anything that does not divide evenly, or
+    comes out as 1, means the state was never sharded.
+    """
+    for key, val in state.items():
+        if not isinstance(val, dict) or "exp_avg" not in val:
+            continue
+        exp = val["exp_avg"]
+        live = expected_shapes.get(key)
+        if live is None or len(exp.shape) < 2:
+            continue
+        # only 2-D large params are reduce-scattered; scalars/1-D are replicated
+        if live[0] % exp.shape[0] == 0 and exp.shape[0] * 2 <= live[0]:
+            return live[0] // exp.shape[0]
+    return 1
+
+
+def _unslice_or_replicate(exp_parts, sq_parts, expected):
+    """
+    Return full-size (exp_avg, exp_avg_sq) from per-rank AdamW shards.
+
+    If every shard already has the full expected shape, the param took the
+    small-param all_reduce path and was replicated, so rank 0's copy is correct.
+    Otherwise the shards are reduce_scatter row-slices and concatenating along
+    dim 0 rebuilds the full tensor.
+    """
+    if expected is None:
+        return torch.cat(exp_parts, 0), torch.cat(sq_parts, 0)
+    if all(tuple(t.shape) == tuple(expected) for t in exp_parts):
+        return exp_parts[0], sq_parts[0]
+    if sum(t.shape[0] for t in exp_parts) != expected[0]:
+        raise ValueError(f"Cannot rebuild optimizer moments: shards sum to "
+                         f"{sum(t.shape[0] for t in exp_parts)} rows but the live parameter "
+                         f"has {expected[0]}")
+    return torch.cat(exp_parts, 0), torch.cat(sq_parts, 0)
+
+
+def _rebuild_fullsize_optimizer_state(checkpoint_dir, step, saved_world, expected_shapes):
+    """
+    Rebuild full-size optimizer moments from a sharded multi-rank checkpoint.
+
+    nanochat shards optimizer state two different ways, so a loader running at a
+    different world size than the one that saved the checkpoint cannot copy a shard
+    straight into the live parameters:
+
+      * AdamW large params (>=1024 numel, i.e. wte/lm_head): moments are
+        reduce-scattered, so rank r holds rows [r*N/S, (r+1)*N/S) and concatenating
+        the shards along dim 0 rebuilds the full tensor. AdamW small params
+        (<1024 numel) are all-reduced, so every rank saved an identical full copy.
+      * Muon groups: each rank holds a contiguous, zero-padded chunk of the group's
+        params, so concatenating gives chunk_size*S rows of which only len(params)
+        are real. Trim to len(params).
+
+    `expected_shapes` holds the live parameter shapes keyed the same way
+    optimizer.state_dict() keys its state. Comparing against them is what
+    distinguishes a replicated 1-D param (resid_lambdas, shape (28,)) from a
+    row-sliced one -- shard shapes alone are ambiguous.
+
+    Runs entirely on CPU: a one-off ~16 GB merge is free next to a multi-day SFT run.
+    """
+    shards = []
+    for r in range(saved_world):
+        path = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{r:d}.pt")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Missing optimizer shard {path} needed to rebuild full-size moments")
+        shards.append(torch.load(path, map_location="cpu"))
+    param_groups = shards[0]["param_groups"]
+    # State keys index the flattened param list; map each key to its Muon group size so
+    # the zero-padded rows can be trimmed off.
+    muon_group_size = {}
+    for g in param_groups:
+        if g.get("kind") == "muon":
+            for pi in g["params"]:
+                muon_group_size[pi] = len(g["params"])
+    merged_state = {}
+    for key in shards[0]["state"]:
+        val0 = shards[0]["state"][key]
+        if not isinstance(val0, dict) or not ({"exp_avg", "momentum_buffer"} & set(val0)):
+            merged_state[key] = val0
+            continue
+        parts = [s["state"][key] for s in shards]
+        if "exp_avg" in val0:  # AdamW
+            exp_full, sq_full = _unslice_or_replicate(
+                [p["exp_avg"] for p in parts], [p["exp_avg_sq"] for p in parts],
+                expected_shapes.get(key))
+            merged_state[key] = {"step": parts[0]["step"], "exp_avg": exp_full, "exp_avg_sq": sq_full}
+        else:  # Muon: each rank owns a contiguous zero-padded chunk -> concat then trim
+            mom = torch.cat([p["momentum_buffer"] for p in parts], 0)
+            mom2 = torch.cat([p["second_momentum_buffer"] for p in parts], 0)
+            n_real = muon_group_size.get(key)
+            if n_real is not None and mom.shape[0] > n_real:
+                mom, mom2 = mom[:n_real], mom2[:n_real]
+            merged_state[key] = {"momentum_buffer": mom, "second_momentum_buffer": mom2}
+    merged = {"state": merged_state, "param_groups": param_groups, "world_size": 1}
+    del shards
+    return merged
+
+
 if args.load_optimizer:
     optimizer_data = load_optimizer_state("base", device, rank=ddp_rank, model_tag=args.model_tag, step=args.model_step)
     if optimizer_data is not None:
+        # The pretrained optimizer shard is saved sharded (AdamW moments reduce-scattered
+        # to 1/N rows, Muon buffers in zero-padded param chunks). Loading a shard saved at
+        # a different world size makes the fused AdamW kernel fail on a broadcast error
+        # (exp_avg [8192,1792] vs param [32768,1792]). Rebuild full-size moments first.
+        # Older checkpoints predate the recorded world_size, so infer it from the shards:
+        # if any AdamW moment is a proper row-slice of its live param, N = param_rows/slice_rows.
+        expected_shapes, _i = {}, 0
+        for _g in optimizer.param_groups:
+            for _p in _g["params"]:
+                expected_shapes[_i] = tuple(_p.shape)
+                _i += 1
+        saved_world = optimizer_data.get("world_size", None)
+        if saved_world is None:
+            saved_world = _infer_saved_world_size(optimizer_data["state"], expected_shapes, args.model_step)
+            if saved_world > 1:
+                print0(f"Checkpoint has no recorded world_size; inferred {saved_world} from sharded moments")
+        if saved_world != ddp_world_size:
+            ckpt_dir = os.path.join(base_dir, "base_checkpoints", args.model_tag or f"d{model.config.n_layer}")
+            print0(f"Optimizer shard saved at world_size={saved_world}, SFT running at {ddp_world_size}: "
+                   f"rebuilding full-size moments from {saved_world} shards")
+            optimizer_data = _rebuild_fullsize_optimizer_state(ckpt_dir, args.model_step, saved_world, expected_shapes)
         base_lrs = [group["lr"] for group in optimizer.param_groups]
         optimizer.load_state_dict(optimizer_data)
         del optimizer_data

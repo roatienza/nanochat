@@ -6,6 +6,7 @@ import re
 import json
 import logging
 import torch
+import torch.distributed as dist
 
 from nanochat.common import get_base_dir
 from nanochat.gpt import GPT, GPTConfig
@@ -54,6 +55,11 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
     if optimizer_data is not None:
         os.makedirs(checkpoint_dir, exist_ok=True)
         optimizer_path = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")
+        # Record how many ranks the moments are sharded across. Large AdamW moments
+        # (wte/lm_head) are stored reduce-scattered, so a loader running at a different
+        # world size must all-gather them before use. See chat_sft.py.
+        optimizer_data = dict(optimizer_data)
+        optimizer_data["world_size"] = dist.get_world_size() if (dist.is_available() and dist.is_initialized()) else 1
         torch.save(optimizer_data, optimizer_path)
         logger.info(f"Saved optimizer state to: {optimizer_path}")
 

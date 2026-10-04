@@ -46,7 +46,7 @@ _ZERO_WIDTH = dict.fromkeys(map(ord, "‌‍﻿"), None)
 
 DEFAULT_PATH = os.environ.get(
     "TOOLCALL_DATA",
-    "/home/rowel/baby-sandbox/data/hermes/func-calling.json",
+    "/data/rowel/data/hermes/func-calling.json",
 )
 
 
