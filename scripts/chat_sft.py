@@ -30,6 +30,7 @@ from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
 from tasks.toolcalling import ToolCalling
+from tasks.toolace import ToolACE
 
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -70,6 +71,8 @@ parser.add_argument("--gsm8k-epochs", type=int, default=4, help="number of epoch
 # by design, so this is the only place the model learns to emit a call.
 parser.add_argument("--toolcall-epochs", type=int, default=2, help="number of epochs of the tool-calling corpus in the training mixture (0 = disable)")
 parser.add_argument("--toolcall-data", type=str, default=None, help="path to tool-calling corpus (default: env TOOLCALL_DATA)")
+parser.add_argument("--toolace-epochs", type=int, default=0, help="number of epochs of the ToolACE corpus in the training mixture (0 = disable)")
+parser.add_argument("--toolace-data", type=str, default=None, help="path to ToolACE corpus (default: env TOOLACE_DATA)")
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
@@ -98,6 +101,13 @@ if not HAS_FA3:
 
 # Load the model and tokenizer
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
+
+# The model loader guesses the step when --model-step is omitted, and records the
+# step it actually used in meta. Every optimizer-rebuild path below formats the
+# step into a filename, so they must use the RESOLVED step, not args.model_step
+# (which is None unless the user passed it). This only bites when the SFT world
+# size differs from the pretrain world size, which is why Stage 3 never hit it.
+resolved_model_step = args.model_step if args.model_step is not None else meta.get("step")
 
 # Inherit training hyperparameters from pretrained checkpoint (None = inherit, explicit value = override)
 pretrain_user_config = meta.get("user_config", {})
@@ -323,14 +333,14 @@ if args.load_optimizer:
                 _i += 1
         saved_world = optimizer_data.get("world_size", None)
         if saved_world is None:
-            saved_world = _infer_saved_world_size(optimizer_data["state"], expected_shapes, args.model_step)
+            saved_world = _infer_saved_world_size(optimizer_data["state"], expected_shapes, resolved_model_step)
             if saved_world > 1:
                 print0(f"Checkpoint has no recorded world_size; inferred {saved_world} from sharded moments")
         if saved_world != ddp_world_size:
             ckpt_dir = os.path.join(base_dir, "base_checkpoints", args.model_tag or f"d{model.config.n_layer}")
             print0(f"Optimizer shard saved at world_size={saved_world}, SFT running at {ddp_world_size}: "
                    f"rebuilding full-size moments from {saved_world} shards")
-            optimizer_data = _rebuild_fullsize_optimizer_state(ckpt_dir, args.model_step, saved_world, expected_shapes)
+            optimizer_data = _rebuild_fullsize_optimizer_state(ckpt_dir, resolved_model_step, saved_world, expected_shapes)
         # Whether we just merged shards or loaded one directly, the live optimizer only
         # ever holds this rank's slice of each moment (optim.py:334, :377). Re-shard so a
         # merged full-size state cannot reach the fused kernel.
@@ -366,13 +376,18 @@ if args.toolcall_epochs > 0:
     if args.toolcall_data:
         tc_kwargs["path"] = args.toolcall_data
     train_tasks += [ToolCalling(**tc_kwargs) for _ in range(args.toolcall_epochs)]
+if args.toolace_epochs > 0:
+    ta_kwargs = {"split": "train"}
+    if args.toolace_data:
+        ta_kwargs["path"] = args.toolace_data
+    train_tasks += [ToolACE(**ta_kwargs) for _ in range(args.toolace_epochs)]
 train_dataset = TaskMixture(train_tasks)
-print0(f"Training mixture: {len(train_dataset):,} rows (MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, ToolCalling x{args.toolcall_epochs})")
+print0(f"Training mixture: {len(train_dataset):,} rows (MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, ToolCalling x{args.toolcall_epochs}, ToolACE x{args.toolace_epochs})")
 val_dataset = TaskMixture([
     SmolTalk(split="test"), # 24K rows in test set
     MMLU(subset="all", split="test", stop=5200), # 14K rows in test set, use only 5.2K to match the train ratios
     GSM8K(subset="main", split="test", stop=420), # 1.32K rows in test set, use only 420 to match the train ratios
-] + ([ToolCalling(split="val")] if args.toolcall_epochs > 0 else [])) # total: 24K + 5.2K + 0.42K ~= 29.6K rows
+] + ([ToolCalling(split="val")] if args.toolcall_epochs > 0 else [])   + ([ToolACE(split="val")] if args.toolace_epochs > 0 else []))
 # DataLoader is defined here, it emits inputs, targets : 2D tensors of shape (device_batch_size, max_seq_len)
 # A big problem is that we don't know the final num_iterations in advance. So we create
 # these two global variables and update them from within the data generator.
