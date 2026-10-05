@@ -99,8 +99,33 @@ class ToolCalling(Task):
     """Function-calling SFT data rendered into nanochat's chat format."""
 
     def __init__(self, path=DEFAULT_PATH, split="train", val_fraction=0.05,
-                 max_examples=None, **kwargs):
+                 max_examples=None, truncate_terminal_call=None, **kwargs):
         super().__init__(**kwargs)
+        # Stage 4 v3. Measured on model_015548.pt (val_bpb 0.31480) with probe_wide.py
+        # over the FULL val populations (hermes 54, ToolACE 182, n=236):
+        #
+        #   budget 512 -> 1024 changed nothing  => the token-cap truncation
+        #   hypothesis is dead; over-calling is real, not a harness artifact.
+        #   hermes:      fn acc 94.6%, 30/31 first-divergences are the right name
+        #                with wrong args, 23/54 match the whole reference then
+        #                emit +4.35 more calls
+        #   ToolACE:     fn acc 58.2%, 69/174 first-divergences are the WRONG name
+        #
+        # Root cause of the hermes half: every one of the 1,036 hermes TRAIN
+        # conversations has its single assistant turn ending in python_output
+        # (100%), because `_convert` attaches the tool result to the assistant
+        # turn that made the call. So hermes teaches
+        # "call -> tool result -> ...", and at inference the environment supplies
+        # results that the eval never shows -- the exact transition the model
+        # fails to make. ToolACE got truncate_to_terminal_call() in v2 (e404ea0);
+        # hermes never did, because hermes is only 1,036 of 818,702 mixture rows.
+        #
+        # Default: ON for train (fix the targets), OFF for val (the eval reference
+        # must stay the full conversation, or the acceptance metric would be
+        # measured against targets we rewrote).
+        if truncate_terminal_call is None:
+            truncate_terminal_call = (split == "train")
+        self.truncate_terminal_call = truncate_terminal_call
         with open(path, "r", encoding="utf-8") as f:
             rows = json.load(f)
         examples = []
@@ -199,6 +224,8 @@ class ToolCalling(Task):
         if not any(isinstance(m["content"], list) and
                    any(p.get("type") == "python" for p in m["content"]) for m in fixed):
             return None  # no actual tool call to learn from
+        if self.truncate_terminal_call:
+            fixed = _truncate_terminal_call(fixed)
         return {"messages": fixed}
 
     def num_examples(self):
@@ -246,6 +273,73 @@ class ToolCalling(Task):
             "count": int(len(pred) == len(ref)),
             "n_ref": len(ref),
         }
+
+
+def _truncate_terminal_call(messages):
+    """End the trajectory "call(s) -> <|assistant_end|>", keeping ALL calls.
+
+    Stage 4 v3. Counterpart to `tasks.toolace.truncate_to_terminal_call` (v2,
+    commit e404ea0), which was only ever applied to ToolACE.
+
+    Every hermes train conversation has its tool calls ending in python_output,
+    because `_convert` attaches each tool result to the assistant turn that made
+    the call (100% of 1,036 examples). So hermes alone teaches "call -> tool
+    result", and at inference the environment supplies results that eval never
+    displays -- so the model never learns to stop after the last call.
+
+    Measured consequence on model_015548.pt (probe_wide.py, full val populations):
+    23/54 hermes val examples match the ENTIRE reference as a correct prefix and
+    then emit +4.35 further calls; 94.6% function-name accuracy. The knowledge is
+    present; only the stop transition is missing.
+
+    Two structural cases, both measured on the 1,036 train conversations:
+      * 159 end with the list-form (call-bearing) assistant turn -> truncate that.
+      * 877 end with a trailing plain-text assistant turn ("Continue." + a
+        summary of what was done). The calls live in an EARLIER turn. We drop the
+        trailing prose turn and truncate the call-bearing one, so the supervised
+        target is calls -> <|assistant_end|>.
+
+    For the 877 case we also drop the synthetic "Continue." user turn, which
+    exists only to satisfy the renderer's strict alternation assert and carries
+    no task content. Everything before it is untouched.
+
+    Tool results are masked 0 by the renderer either way, so dropping them
+    removes no supervision -- it only changes what FOLLOWS the final call.
+    The call COUNT is preserved deliberately: 64.8% of hermes val references
+    need more than one call, so capping at one would cap exact match at 35.2%.
+    """
+    # Work on a copy; never mutate the caller's structure.
+    msgs = [dict(m) for m in messages]
+
+    def _collapse(turn):
+        content = turn.get("content")
+        if not isinstance(content, list):
+            return turn, False
+        calls = [p for p in content if p.get("type") == "python"]
+        if not calls or len(calls) == len(content):
+            return turn, False  # no calls, or already call-only
+        new = dict(turn)
+        new["content"] = calls
+        return new, True
+
+    # Drop trailing plain-text assistant turns (and the "Continue." user turn
+    # that the renderer alternation fix inserted in front of them).
+    while msgs and msgs[-1].get("role") == "assistant" and \
+            not isinstance(msgs[-1].get("content"), list):
+        msgs.pop()
+        if msgs and msgs[-1].get("role") == "user" and \
+                isinstance(msgs[-1].get("content"), str) and \
+                msgs[-1]["content"].strip() == "Continue.":
+            msgs.pop()
+
+    if not msgs or msgs[-1].get("role") != "assistant":
+        return messages  # nothing usable to collapse; leave original untouched
+
+    new_last, changed = _collapse(msgs[-1])
+    if not changed:
+        return messages
+    msgs[-1] = new_last
+    return msgs
 
 
 def _looks_like_call(line):
