@@ -149,9 +149,11 @@ class ToolACE(Task):
     """ToolACE dialogs rendered into nanochat's chat format."""
 
     def __init__(self, path=DEFAULT_PATH, split="train", val_fraction=0.02,
-                 max_examples=None, keep_tool_results=True, **kwargs):
+                 max_examples=None, keep_tool_results=True,
+                 truncate_terminal_call=True, **kwargs):
         super().__init__(**kwargs)
         self.keep_tool_results = keep_tool_results
+        self.truncate_terminal_call = truncate_terminal_call
         with open(path, "r", encoding="utf-8") as f:
             rows = json.load(f)
         examples, dropped = [], 0
@@ -212,6 +214,8 @@ class ToolACE(Task):
         folded = _fold_turns(messages)
         if folded is None:
             return None
+        if self.truncate_terminal_call:
+            folded = truncate_to_terminal_call(folded)
         if not any(isinstance(m["content"], list) and
                    any(p.get("type") == "python" for p in m["content"]) for m in folded):
             return None  # nothing to learn: no emitted call
@@ -267,6 +271,45 @@ def _extract_schema_array(sys_text):
     except Exception:
         return []
     return tools if isinstance(tools, list) and tools else []
+
+
+def truncate_to_terminal_call(messages):
+    """Make the trajectory end "call -> <|assistant_end|>", keeping ALL calls.
+
+    Stage 4 v2. Measured on the Stage 4 checkpoint (d28b-v2 @ 15560), greedy on
+    held-out hermes: exact match 0.0%, but the reference appears verbatim as a
+    PREFIX 43.8% of the time, and the model emits 11.12 calls against a
+    reference of 1.88. Greedy with top_k=1 is byte-identical to top_k=0, so
+    this is not a sampling pathology: the model reproduces the reference calls
+    and then falls into a repetition loop instead of stopping.
+
+    eval_toolcalling.py prompts on the first assistant turn but scores EVERY
+    python part in the conversation (mean 2.20 calls; 64.8% of references need
+    more than one). So the shape to learn is: emit the whole call list
+    consecutively, then stop. Truncating to a SINGLE call would cap the metric
+    at the 35.2% of references that happen to have exactly one call, so the
+    call COUNT must be preserved.
+
+    ToolACE instead trains calls separated by python_output results, which at
+    inference the environment supplies and the eval never shows (50.2% of val
+    reference parts are python_output). Collapsing the final assistant turn to
+    its python parts only therefore gives both properties at once: the count
+    survives, and the trajectory terminates on a call -> <|assistant_end|>
+    transition -- exactly the transition the model fails to make at inference.
+    """
+    if not messages or messages[-1].get("role") != "assistant":
+        return messages
+    last = messages[-1]
+    content = last.get("content")
+    if not isinstance(content, list):
+        return messages
+    calls = [p for p in content if p.get("type") == "python"]
+    if not calls or len(calls) == len(content):
+        return messages  # already call-only: nothing to change
+    out = [dict(m) for m in messages]
+    out[-1] = dict(out[-1])
+    out[-1]["content"] = calls
+    return out
 
 
 def _fold_turns(messages):
