@@ -331,3 +331,21 @@ SOURCES
 NEXT
   Stage 4 acceptance: eval_toolcalling.py held-out, compare to the 0.0%
   baseline recorded above.  Then Stage 5 (chat_rl.py on GSM8K).
+
+2026-10-05 13:57 PDT  Stage 4 v2 launched.  GPUs 3,4,5,7, 490 ms/step, 66.5k
+tok/s, 39.3% MFU, 818,702 rows.  Fix: collapse the final assistant turn to its
+python parts so training targets end "call -> <|assistant_end|>".
+
+  Two of my own earlier findings were wrong and are retracted:
+  1. "0/54 never emits assistant_end" was an artifact of my probe --
+     generate_batch() excludes terminal tokens (engine.py:294), so the check
+     could never fire for ANY model.
+  2. "ToolACE lacks the call -> END signal" is false: 99.8% already end on
+     <|assistant_end|> and 93.2% already end call-only.
+
+  Real defect is a repetition loop: exact match 0.0% but the reference is an
+  exact PREFIX 43.8% of the time, with 11.12 predicted calls vs 1.88 reference.
+  top_k=1 is byte-identical to top_k=0, so not a sampling pathology.
+
+  nanochat e404ea0 -> roatienza/nanochat.  karpathy/nanochat untouched.
+  Detail: STATUS_2026-10-05_STAGE4_V2.md
