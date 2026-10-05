@@ -349,3 +349,22 @@ python parts so training targets end "call -> <|assistant_end|>".
 
   nanochat e404ea0 -> roatienza/nanochat.  karpathy/nanochat untouched.
   Detail: STATUS_2026-10-05_STAGE4_V2.md
+2026-10-05 16:35 PDT  Stage 4 v2 step-5,000 probe (corrected, mid-run).  The
+acceptance metric moved off zero for the first time: exact match 3.7% (2/54)
+on held-out hermes, vs 0.0% for Stage 4 v1 checkpoint 15560.  Real termination
+(stopped before the token cap) 61.1% vs 13.0%; mean predicted calls 9.31 ->
+7.33 against a reference of 2.20.  So truncate_to_terminal_call is doing what
+it was meant to, but the repetition loop is NOT cured -- dumps still show
+verbatim CALL repeats until the cap, plus token-level degeneration inside JSON
+strings ("connect_to_all_ devices_ through_interface_interface...").  ToolACE
+val is still 0.0% (18.39 predicted calls vs 1.91 reference).
+
+  Measurement note: the old probe's "emitted assistant_end 0/54" was an
+  artifact -- generate_batch() strips terminal tokens (engine.py:294), so that
+  check is False by construction for any model.  Third retraction of that
+  claim.  New probe_term_real.py measures "returned before the cap" instead.
+
+  This is step 5,000 of ~15,533, pre-warmdown.  Run ETA ~2.2 h wall clock
+  (~19:05 PDT); the v1 curve was still improving at 15,560 so this is an early
+  read, not a verdict.  Re-probe the final checkpoint before accepting Stage 4.
+  Detail: STATUS_2026-10-05_STAGE4_V2_PROBE.md
