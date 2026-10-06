@@ -53,9 +53,11 @@ eval, 17 consecutive drops.
 |---|---|---|---|---|---|---|---|---|---|
 | ChatCORE | 0.0106 | 0.0330 | 0.0336 | 0.0485 | −0.0020 | 0.0044 | 0.0284 | 0.0147 | 0.0180 |
 
-Range −0.0020 → 0.0485 over 11 evals. Stage 3's final was 0.082, so v2 is still
-ahead of Stage 3 on this metric, but this is a 9-example benchmark and the
-per-eval spread is larger than the signal. Do not read a trend into it.
+Range −0.0020 → 0.0485 over 11 evals. Stage 3's final was **0.0272** (measured
+2026-10-06; the "0.082" cited here was a d12 ablation run, not Stage 3 final — see
+CORRECTION_2026-10-06_CHATCORE.md), so v2 is still ahead of Stage 3 on this
+metric, but this is a 9-example benchmark and the per-eval spread is larger than
+the signal. Do not read a trend into it.
 
 ## ETA — 2.0 h, and the log's own `eta:` field is not to be trusted
 

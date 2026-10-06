@@ -9,7 +9,7 @@ Finished: 2026-10-06 03:24 PDT, clean wandb teardown, no signal, no traceback.
 |---|---|
 | Steps | 13,630 (data-driven stop, `num_iterations=-1`) |
 | val_bpb (min, last step) | **0.302180** |
-| ChatCORE | 0.1360 (vs Stage 3 final 0.082 — see note below) |
+| ChatCORE | 0.1360 (vs Stage 3 final **0.0272** — see CORRECTION_2026-10-06_CHATCORE.md; the earlier "0.082" was a d12 ablation run, not Stage 3 final) |
 | Train time | 111.78 min |
 | GPUs | 3,4,5,7 (released) |
 | Checkpoint | `d28b-v2/model_013630.pt` (note: v3 overwrote v2's 5000/10000-step files; v2's 15548 file is intact) |
@@ -63,10 +63,12 @@ of reference. Stage 4 passes.**
    distribution is different (multi-arg, nested) and the model still gets
    arguments wrong there. This is the RL stage's job — RL rewards exact calls,
    which is exactly the residual defect.
-2. **ChatCORE regressed 0.082 → 0.136.** The reweight (MMLU ×3→×1, GSM8K
-   ×4→×1) traded general chat ability for tool ability. GSM8K chatcore is 0.0.
-   Whether Stage 5 RL (which runs on a chat core) tolerates this needs a
-   decision before launch.
+2. **ChatCORE did NOT regress — corrected.** v3 is 0.1360 vs Stage 3 final
+   **0.0272** (measured 2026-10-06, see CORRECTION_2026-10-06_CHATCORE.md).
+   The "0.082" baseline I cited was a d12 ablation run (`9w53jmjw`), not
+   Stage 3 final. v3 is ~0.11 ABOVE Stage 3 final on ChatCORE. GSM8K
+   chatcore is 0.0 (24 samples) — a real weakness, but shared with v2 and
+   exactly what RL should attack. No blend needed; Stage 5 starts from v3.
 3. **Checkpoint hygiene:** v3 wrote into the `d28b-v2` directory and clobbered
    v2's 5000/10000 checkpoints. v2's final (15548) is intact. Use distinct
    model tags per run going forward.

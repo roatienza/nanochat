@@ -25,9 +25,10 @@ val_bpb, step 0 → 8,000: 0.4334 → 0.4921 (500) → 0.4464 (5k) → 0.4343 �
 Monotone after the known step-500 transient and the step-5,000 checkpoint-save blip.
 
 ChatCORE is **flat-to-noisy around zero**: 0.0465 (6.8k) → 0.0156 → 0.0278 → 0.0153 → 0.0011 →
-0.0010 → 0.0097. For reference, the Stage 3 final checkpoint scored **0.082**. So Stage 4 is
-*behind* Stage 3 on ChatCORE — expected, since Stage 4's mixture is dominated by MMLU/GSM8K
-repeats and its purpose is tool calling, not general chat.
+0.0010 → 0.0097. For reference, the Stage 3 final checkpoint scores **0.0272** (measured
+2026-10-06; the "0.082" cited here was a d12 ablation run, not Stage 3 final — see
+CORRECTION_2026-10-06_CHATCORE.md). So Stage 4 is *ahead* of Stage 3 final on ChatCORE,
+not behind.
 
 ## The probe: exact match off zero, loop not cured
 
@@ -60,7 +61,10 @@ returned sequences rather than searching the stripped return value for a termina
 1. **v1 @ 15,560 was not the final checkpoint.** v1's last durable checkpoint is step 10,000;
    step 15,560 is where the probe ran. My earlier comparison was against a mid-run artifact.
 2. **"Step 5,000 checkpoint lands ~15:55"** — correct, it landed 15:56:41. No change.
-3. **ChatCORE 0.082 for Stage 3** — verified from the Stage 3 log, not memory.
+3. **ChatCORE 0.082 for Stage 3** — this was WRONG (corrected 2026-10-06). The
+   0.0821 came from wandb run `9w53jmjw`, a **d12 ablation** SFT (batch 131,072,
+   step 414), not the Stage 3 final. The Stage 3 final (model_015028.pt) scores
+   **0.0272** (measured 2026-10-06). See CORRECTION_2026-10-06_CHATCORE.md.
 4. I previously implied the implied denominator (~15,533) came from the run. It doesn't; it's
    `8200 / 0.5280`. The run never states a total. As with Stage 3 (`num_iterations: -1`), I
    report **steps + the log's own percentage** rather than a number I back-derived.

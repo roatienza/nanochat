@@ -32,7 +32,9 @@ Recent block: 0.3589 (11.5k) · 0.3556 · 0.3518 · 0.3489 · 0.3454 · 0.3426
 · 0.3393 · 0.3356 · 0.3328 · 0.3303 · 0.3269 · 0.3245.
 No plateau, no reversal. Best is the most recent eval.
 
-ChatCORE is noisy and behind Stage 3 (0.0963–0.1030 vs Stage 3's 0.082):
+ChatCORE is noisy and AHEAD of Stage 3 final (0.0963–0.1030 vs Stage 3 final's
+**0.0272**, measured 2026-10-06; the "0.082" cited here was a d12 ablation run — see
+CORRECTION_2026-10-06_CHATCORE.md):
 0.0774 (12.8k) · 0.1007 · 0.0964 · 0.1015 · 0.1030 · 0.1010 · 0.0963.
 Expected — Stage 4's mixture is mostly MMLU/GSM8K repeats; tool calling is its job.
 

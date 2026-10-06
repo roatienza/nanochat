@@ -1,3 +1,37 @@
+2026-10-06 ~10:30 PDT — Stage 3 final ChatCORE measured; "regression" retracted
+
+MEASUREMENT
+  Ran scripts/chat_eval.py on the Stage 3 FINAL checkpoint
+  (d28b-v2/model_015028.pt, val_bpb 0.308864) on GPU 1, mirroring the
+  in-training ChatCORE loop exactly (categorical = full test set, generative
+  = 24 samples, batch 2, temp 0.0, top_k 50, single Engine).
+    ARC-Easy 24.62% (2376)  ARC-Challenge 26.54% (1172)  MMLU 24.65% (14042)
+    GSM8K 0.00% (24)  HumanEval 12.50% (24)
+    ChatCORE = 0.0272   ChatCORE_cat = 0.0036
+  The Stage 3 final run (tpkzb8yr) used --chatcore-every=-1, so ChatCORE was
+  never measured in-training (wandb summary chatcore_metric: N/A). This is the
+  first real measurement of that checkpoint.
+
+RETRACTION
+  Every status file Oct 5-6 cited "Stage 3's final was 0.082" and claimed it
+  was "verified from the Stage 3 log." It is NOT in any Stage 3 log (all three
+  have zero ChatCORE: lines). The 0.0821 is wandb run 9w53jmjw (Sept 30):
+    --run=sft-v1 --model-tag=d12 --total-batch-size=131072 --eval-every=100
+  i.e. a d12 (0.286 B) ABLATION SFT at step 414 — different model, batch,
+  scale. Comparing Stage 4 v2/v3 (d28) against it was apples-to-oranges.
+
+CORRECTED COMPARISON (no regression)
+  Stage 3 final model_015028.pt  ChatCORE 0.0272  (measured now)
+  Stage 4 v2   model_015548.pt   ChatCORE 0.1367
+  Stage 4 v3   model_013630.pt   ChatCORE 0.1360
+  v2/v3 are ~0.11 ABOVE Stage 3 final, not below. v3 is statistically tied
+  with v2 on ChatCORE and better on val_bpb (0.3022 vs 0.3148).
+
+DECISION
+  Stage 5 (RL) starts from model_013630.pt (v3). No blend needed.
+
+  Detail: CORRECTION_2026-10-06_CHATCORE.md
+
 2026-10-03 11:20 PDT — Stage 2 v2 status + repo sync
 
 REPO
@@ -379,7 +413,9 @@ hermes exact 0.0% -> 40.7% (22/54), fn accuracy 100.0%, mean pred calls
 2.13 vs 2.20 ref, 96-98% stop before cap.  ToolACE exact 0.0% -> 2.2%, fn
 78.6%, mean pred 1.90 vs 1.97 ref.  Budget 512 vs 1024 identical (token-cap
 hypothesis stays dead).  Residuals carried to Stage 5: ToolACE argument
-fidelity (78.6% fn), ChatCORE regressed 0.082 -> 0.136 under the reweight
-(GSM8K chatcore 0.0).  Checkpoint hygiene: v3 clobbered v2's 5000/10000
+fidelity (78.6% fn).  ChatCORE did NOT regress: v3 0.1360 vs Stage 3 final
+**0.0272** (measured 2026-10-06; the "0.082" baseline was a d12 ablation run
+`9w53jmjw`, not Stage 3 final — see CORRECTION_2026-10-06_CHATCORE.md).
+GSM8K chatcore 0.0 (24 samples) is a real weakness, shared with v2, for RL.  Checkpoint hygiene: v3 clobbered v2's 5000/10000
 files in the d28b-v2 dir; v2's 15548 final intact.
   Detail: STATUS_2026-10-06_STAGE4_V3_FINAL.md

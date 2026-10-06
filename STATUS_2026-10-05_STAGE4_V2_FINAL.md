@@ -20,8 +20,11 @@ This is a *worse* headline than step 5,000 showed, and it is the number that cou
 | Checkpoint | `chatsft_checkpoints/d28b-v2/model_015548.pt` + 4 optim shards |
 
 ChatCORE at exit: **0.13667** (ARC-C 0.329, ARC-E 0.409, GSM8K 0.125, HumanEval 0.125, MMLU 0.337).
-Note this is *below* Stage 3's 0.082 on a worse scale — ChatCORE is flat/weak for this run and is
-not the acceptance signal. The tool probe is.
+Note: the "Stage 3's 0.082" cited here is WRONG — that was a d12 ablation run
+(`9w53jmjw`), not the Stage 3 final. The actual Stage 3 final (model_015028.pt)
+scores **0.0272** (measured 2026-10-06, see CORRECTION_2026-10-06_CHATCORE.md).
+So v2 is ~0.11 ABOVE Stage 3 final, not below. ChatCORE is not the acceptance
+signal; the tool probe is.
 
 ## Acceptance probe — `model_015548.pt`, GPU 1, n=54 each, budget 512
 
