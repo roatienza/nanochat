@@ -368,3 +368,18 @@ val is still 0.0% (18.39 predicted calls vs 1.91 reference).
   (~19:05 PDT); the v1 curve was still improving at 15,560 so this is an early
   read, not a verdict.  Re-probe the final checkpoint before accepting Stage 4.
   Detail: STATUS_2026-10-05_STAGE4_V2_PROBE.md
+2026-10-05 21:15 PDT  Stage 4 v3 launched: hermes target-truncation fix (the
+v2 root-cause finding applied to hermes, which v2 never got) + reweighted
+mixture (tool rows 3.5% -> 9.3%).  GPUs 3,4,5,7, 66.5k tok/s, 39.3% MFU.
+  Detail: STATUS_2026-10-05_STAGE4_V3.md
+2026-10-06 09:30 PDT  Stage 4 v3 COMPLETE, ACCEPTANCE PASSES.  13,630 steps,
+111.78 min, val_bpb 0.302180 (monotone after step-1k transient), clean
+teardown.  Wide probe on final checkpoint, full populations, 5-GPU sharded:
+hermes exact 0.0% -> 40.7% (22/54), fn accuracy 100.0%, mean pred calls
+2.13 vs 2.20 ref, 96-98% stop before cap.  ToolACE exact 0.0% -> 2.2%, fn
+78.6%, mean pred 1.90 vs 1.97 ref.  Budget 512 vs 1024 identical (token-cap
+hypothesis stays dead).  Residuals carried to Stage 5: ToolACE argument
+fidelity (78.6% fn), ChatCORE regressed 0.082 -> 0.136 under the reweight
+(GSM8K chatcore 0.0).  Checkpoint hygiene: v3 clobbered v2's 5000/10000
+files in the d28b-v2 dir; v2's 15548 final intact.
+  Detail: STATUS_2026-10-06_STAGE4_V3_FINAL.md
