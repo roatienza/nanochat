@@ -1,0 +1,18 @@
+2026-10-06 11:13:43,108 - nanochat.common - [32m[1mINFO[0m - Distributed world size: 1
+2026-10-06 11:13:43,109 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Loading model from /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-v2 with step 13630
+2026-10-06 11:13:48,216 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Building model with config: {'sequence_len': 2048, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL'}
+
+===== Q0 (greedy, max512) genlen=102 =====
+PROMPT: Mimi picked up 2 dozen seashells on the beach.  Kyle found twice as many shells as Mimi and put them in his pocket. Leigh grabbed one-third of the shells that Kyle found.  How many seashells did Leigh have?
+GEN: Mimi picked up 2 dozen seashells, so he has 2 x 12 = 24 seashells. | Kyle found twice as many shells as Mimi, so he found 2 x 2 = 4 shells. | Leigh grabbed one-third of the shells that Kyle found, so he has 4/3 = 2 shells. | Therefore, Leigh has 2 + 4 + 2 = 6 seashells. | #### 6 | The answer is: 6
+CORRECT: 0
+
+===== Q1 (greedy, max512) genlen=117 =====
+PROMPT: Frankie's parents let him have many pets. He has six more snakes than he has cats. He has one less parrot than cats. Six of his pets have four legs. He has 2 dogs. How many pets does he have in total?
+GEN: Frankie has 6 more snakes than cats, so he has 6 + 6 = 12 snakes. | He has one less parrot than cats, so he has 12 - 1 = 11 parrot. | He has 6 more snakes than cats, so he has 6 + 6 = 12 snakes. | He has 2 dogs, so he has 2 * 4 = 8 dogs. | In total, Frankie has 12 + 11 + 12 + 8 = 33 pets. | #### 33 | The answer is: 33
+CORRECT: 0
+
+===== Q3 (greedy, max512) genlen=135 =====
+PROMPT: Emma's bank account has $100 in it. Each day of the week, she spends $8. At the end of the week, she goes to the bank and asks for as many $5 bills as her account can give her. She leaves the rest in the account. How many dollars remain in the accoun
+GEN: To find out how much money Emma has left in the account after she leaves the bank, we need to calculate the total amount she spent on bills and subtract that from the initial amount of $100. |  | Emma spent $8 on bills each day, so she spent a total of 8 * 7 = $56 on bills. Since she left the bank with $100, she has $100 - $56 = $44 left in the account. |  | Now, we need to find out how many $5 bills she can give Emma. Since she spent $56 on bills, she can give Emma 56 / 5 = 14 $5 bills.
+CORRECT: 0

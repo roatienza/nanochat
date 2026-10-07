@@ -1,0 +1,20 @@
+2026-10-06 11:06:44,753 - nanochat.common - [32m[1mINFO[0m - Distributed world size: 1
+2026-10-06 11:06:44,753 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Loading model from /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-v2 with step 13630
+2026-10-06 11:06:50,637 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Building model with config: {'sequence_len': 2048, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL'}
+q0: 1/16 correct
+q1: 0/16 correct
+q2: 0/16 correct
+q3: 0/16 correct
+q4: 0/16 correct
+q5: 2/16 correct
+q6: 0/16 correct
+q7: 0/16 correct
+q8: 0/16 correct
+q9: 0/16 correct
+q10: 0/16 correct
+q11: 0/16 correct
+BASELINE N=12 x 16 samples
+overall: 3/192 = 0.016
+histogram: {0: 10, 1: 1, 2: 1}
+LEARNABLE(0<c<16): 2/12  all-correct: 0/12  all-wrong: 10/12
+DONE_BASELINE
