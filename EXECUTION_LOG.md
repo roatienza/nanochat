@@ -419,3 +419,32 @@ fidelity (78.6% fn).  ChatCORE did NOT regress: v3 0.1360 vs Stage 3 final
 GSM8K chatcore 0.0 (24 samples) is a real weakness, shared with v2, for RL.  Checkpoint hygiene: v3 clobbered v2's 5000/10000
 files in the d28b-v2 dir; v2's 15548 final intact.
   Detail: STATUS_2026-10-06_STAGE4_V3_FINAL.md
+2026-10-10 09:35 PDT  Stage 6 agentic RL pilot COMPLETE + OFFLINE EVAL DONE.
+  178/178 steps, 31.5 h on GPU 6, EXIT=0. Pass@1 0.067 -> 0.600 (+53 pts),
+  Pass@2 0.120 -> 0.667. Curve monotone through step 120, then flat:
+  120=140=160=150(offline)=177(offline)=0.600/0.667, per-block identical.
+  Plateau CONFIRMED by offline eval of the two never-evaluated checkpoints
+  (150, 177) on the same 150-instance held-out split — nothing hiding, no
+  regression. Mastered 9 blocks (count_chars/math_fns/format_rows L1+L2,
+  data_fix L2+L3, list_ops L1); zero on all L3s + list_ops@L2 + data_fix@L1
+  (regressed at step 100, never recovered). Follow-on needs curriculum fix:
+  replay mix of mastered blocks + frontier weighting toward L3/list_ops@L2.
+  File-state gotcha found: chat_rl_agentic.py lines 136/209 in the CURRENT
+  file lost their index subscripts; pyc bytecode forensics prove the file AS
+  RUN had them (pilot numbers valid). Fix before any rerun.
+  Detail: STATUS_2026-10-10_STAGE6_PILOT_FINAL.md
+2026-10-13 09:15 PDT  Stage 6b (curriculum replay + scaffold) COMPLETE + OFFLINE EVAL DONE.
+  178/178 steps, ~44 h on GPU 1, EXIT=0 (finished Oct 12 21:41). In-run eval
+  curve: step0 0.600/0.667 -> steps 20-160 ALL 0.667/0.667 (Pass@1/Pass@2,
+  150 held-out). Offline eval of ckpts 150+177 (GPU 6, finished 08:56):
+  BOTH 0.667/0.667, per-block identical — confirms in-run curve, +6.7 pts
+  Pass@1 over pilot final (0.600). Mastered 10/15 blocks: count_chars L1/L2,
+  math_fns L1/L2, format_rows L1/L2, data_fix L1/L2/L3, list_ops L1.
+  data_fix@L1 RECOVERED (1.00; regressed to 0 in pilot) — replay mix worked.
+  Zero on 5: count_chars@L3, math_fns@L3, format_rows@L3, list_ops@L2/L3.
+  Anneal at step 89 lifted scaffold; train reward dropped to 0.31-0.69 on
+  uncracked blocks (no internalization), mastered set held. wandb
+  stage6b-rl-curriculum run 8wof7d47. Checkpoints d28b-rl100: 25..177.
+  Next mechanisms for the 5 dead blocks: repeated scaffold-anneal cycles,
+  or within-block decomposition curriculum.
+  Files: nanochat_store/v2/stage6b_offline_eval_results.json (+ .log).
