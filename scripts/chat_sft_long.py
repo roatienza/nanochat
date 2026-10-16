@@ -53,12 +53,19 @@ parser.add_argument("--device-batch-size", type=int, default=1)
 parser.add_argument("--total-batch-size", type=int, default=262144)
 parser.add_argument("--num-iterations", type=int, default=600, help="-1 = one epoch over the mixture")
 parser.add_argument("--longctx-epochs", type=int, default=2, help="copies of LongContextSFT in the mixture")
+parser.add_argument("--longctx-families", type=str, default="niah,doc_qa,multi_tool,long_summary")
 parser.add_argument("--levels", type=str, default="1,2,3",
                     help="comma-separated LongContextSFT levels (0 = short ~4k rows)")
 parser.add_argument("--instances-per-level", type=str, default="40",
                     help="int, or comma-separated per-level counts aligned with --levels")
 parser.add_argument("--toolcall-epochs", type=int, default=1)
 parser.add_argument("--toolace-epochs", type=int, default=1)
+parser.add_argument("--followup-epochs", type=int, default=0,
+                    help="copies of ToolFollowUp (tool-result -> prose answer) in the mixture")
+parser.add_argument("--smoltalk-cap", type=int, default=0,
+                    help="cap SmolTalk train rows via Task slicing (0 = no cap)")
+parser.add_argument("--glaive-mr-epochs", type=int, default=0,
+                    help="copies of GlaiveMultiRound (result->answer->re-ask->call) in the mixture")
 parser.add_argument("--smoltalk-epochs", type=int, default=1)
 parser.add_argument("--embedding-lr", type=float, default=0.072, help="0.24x of pretrain (SFT-ish)")
 parser.add_argument("--unembedding-lr", type=float, default=0.0019)
@@ -219,17 +226,28 @@ if len(_ipl) == 1:
     _ipl = _ipl[0]
 assert (not isinstance(_ipl, list)) or len(_ipl) == len(_levels), \
     f"--instances-per-level {_ipl} must align with --levels {_levels}"
+_fams = tuple(f.strip() for f in args.longctx_families.split(",") if f.strip())
 for _ in range(args.longctx_epochs):
-    train_tasks.append(LongContextSFT(levels=_levels, instances_per_level=_ipl))
+    train_tasks.append(LongContextSFT(families=_fams, levels=_levels, instances_per_level=_ipl))
 for _ in range(args.toolcall_epochs):
     train_tasks.append(ToolCalling(split="train"))
 for _ in range(args.toolace_epochs):
     train_tasks.append(ToolACE(split="train"))
+if args.followup_epochs > 0:
+    from tasks.toolfollowup import ToolFollowUp
+    for _ in range(args.followup_epochs):
+        train_tasks.append(ToolFollowUp(split="train"))
+if args.glaive_mr_epochs > 0:
+    from tasks.glaive_multiround import GlaiveMultiRound
+    for _ in range(args.glaive_mr_epochs):
+        train_tasks.append(GlaiveMultiRound(split="train", max_rows=20000))
 for _ in range(args.smoltalk_epochs):
-    train_tasks.append(SmolTalk(split="train"))
+    st = SmolTalk(split="train", stop=args.smoltalk_cap or None)  # Task(start,stop) view
+    train_tasks.append(st)
 train_dataset = TaskMixture(train_tasks)
 print0(f"Training mixture: {len(train_dataset):,} rows (LongCtx x{args.longctx_epochs}, "
-       f"ToolCalling x{args.toolcall_epochs}, ToolACE x{args.toolace_epochs}, SmolTalk x{args.smoltalk_epochs})")
+       f"ToolCalling x{args.toolcall_epochs}, ToolACE x{args.toolace_epochs}, "
+       f"FollowUp x{args.followup_epochs}, SmolTalk x{args.smoltalk_epochs})")
 val_dataset = TaskMixture([
     LongContextSFT(levels=(1,), instances_per_level=4, seed=999),
     ToolCalling(split="val"),
