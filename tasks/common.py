@@ -183,6 +183,21 @@ class TaskSequence(Task):
                 return self.tasks[task_idx][index]
             index -= task_length
 
+    def evaluate(self, conversation, completion):
+        """Delegate to the sub-task that owns this conversation (matched by
+        identity of the conversation dict). Used by RL when a TaskSequence is
+        the train/val task."""
+        for task in self.tasks:
+            # each sub-task knows how to evaluate its own conversations
+            try:
+                return task.evaluate(conversation, completion)
+            except AssertionError:
+                continue
+        raise ValueError("No sub-task could evaluate this conversation")
+
+    def reward(self, conversation, completion):
+        return float(self.evaluate(conversation, completion))
+
 
 def render_mc(question, letters, choices):
     """
