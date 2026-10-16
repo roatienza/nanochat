@@ -37,6 +37,14 @@ class GPTConfig:
     # Characters: L=long (full context), S=short (quarter context)
     # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
     window_pattern: str = "SSSL"
+    # Optional override for the S-layer window size. None = quarter of sequence_len
+    # (the trained default). For long-context-extended models, set this to the
+    # TRAINED short window (e.g. 512) so S layers keep their trained attention
+    # range while L layers cover the full extended context.
+    short_window: int = None
+    # Rotary embedding base. Kept as a config knob so long-context models can
+    # differ from the trained default of 100000 without code changes.
+    rope_base: int = 100000
 
 
 def norm(x):
@@ -196,7 +204,7 @@ class GPT(nn.Module):
         # In the future we can dynamically grow the cache, for now it's fine.
         self.rotary_seq_len = config.sequence_len * 10 # 10X over-compute should be enough, TODO make nicer?
         head_dim = config.n_embd // config.n_head
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
+        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim, base=config.rope_base)
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
@@ -256,7 +264,7 @@ class GPT(nn.Module):
 
         # Rotary embeddings
         head_dim = self.config.n_embd // self.config.n_head
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
+        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim, base=self.config.rope_base)
         self.cos, self.sin = cos, sin
 
         # Cast embeddings to COMPUTE_DTYPE: optimizer can tolerate reduced-precision
@@ -299,7 +307,10 @@ class GPT(nn.Module):
         assert all(c in "SL" for c in pattern), f"Invalid window_pattern: {pattern}. Use only S and L."
         # Map characters to window sizes
         long_window = config.sequence_len
-        short_window = -(-long_window // 4 // 128) * 128  # ceil to FA3 tile size (2048 -> 768)
+        if getattr(config, "short_window", None) is not None:
+            short_window = config.short_window
+        else:
+            short_window = -(-long_window // 4 // 128) * 128  # ceil to FA3 tile size (2048 -> 768)
         char_to_window = {
             "L": (long_window, 0),
             "S": (short_window, 0),

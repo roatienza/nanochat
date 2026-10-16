@@ -65,6 +65,7 @@ parser.add_argument("--chatcore-every", type=int, default=200, help="evaluate Ch
 parser.add_argument("--chatcore-max-cat", type=int, default=-1, help="max problems per categorical task for ChatCORE")
 parser.add_argument("--chatcore-max-sample", type=int, default=24, help="max problems per generative task for ChatCORE")
 # Data mixture
+parser.add_argument("--smoltalk-epochs", type=int, default=1, help="number of epochs of SmolTalk in training mixture (0 = disable)")
 parser.add_argument("--mmlu-epochs", type=int, default=3, help="number of epochs of MMLU in training mixture (teaches Multiple Choice)")
 parser.add_argument("--gsm8k-epochs", type=int, default=4, help="number of epochs of GSM8K in training mixture (teaches Math and Tool Use)")
 # Stage 4: tool calling. The stock smol-smoltalk mixture excludes function calling
@@ -367,7 +368,7 @@ for group in optimizer.param_groups:
 
 # SFT data mixture and DataLoader
 train_tasks = [
-    SmolTalk(split="train"), # 460K rows of general conversations
+    *[SmolTalk(split="train") for _ in range(args.smoltalk_epochs)], # 460K rows of general conversations per epoch
     *[MMLU(subset="all", split="auxiliary_train") for _ in range(args.mmlu_epochs)], # 100K rows per epoch
     *[GSM8K(subset="main", split="train") for _ in range(args.gsm8k_epochs)], # 8K rows per epoch
 ]
@@ -382,7 +383,7 @@ if args.toolace_epochs > 0:
         ta_kwargs["path"] = args.toolace_data
     train_tasks += [ToolACE(**ta_kwargs) for _ in range(args.toolace_epochs)]
 train_dataset = TaskMixture(train_tasks)
-print0(f"Training mixture: {len(train_dataset):,} rows (MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, ToolCalling x{args.toolcall_epochs}, ToolACE x{args.toolace_epochs})")
+print0(f"Training mixture: {len(train_dataset):,} rows (SmolTalk x{args.smoltalk_epochs}, MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs}, ToolCalling x{args.toolcall_epochs}, ToolACE x{args.toolace_epochs})")
 val_dataset = TaskMixture([
     SmolTalk(split="test"), # 24K rows in test set
     MMLU(subset="all", split="test", stop=5200), # 14K rows in test set, use only 5.2K to match the train ratios
