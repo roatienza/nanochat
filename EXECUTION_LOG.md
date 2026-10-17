@@ -44,3 +44,66 @@ Gates on the served v5e (nanochat-d28b-rl100-128k-v5e, port 8000):
 Artifacts: checkpoints chatsft_checkpoints/d28b-128k-sft-v5{b,c,d,e};
 exports vllm_d28b/nanochat-d28b-rl100-128k-v5{b,c,d,e}; results
 /data/rowel/test_128k_v5{d,e}_results.txt; serve logs vllm_serve_8000_128k_v5{b,c,d,e}.log
+
+## 2026-10-17 — Same-tool over-call fixed (v5j served on port 8000)
+
+The agent-harness failure: with 2+ rounds of the SAME tool in history the
+model emitted another call with hallucinated args (10/10 at temp 0), and easy
+questions over-triggered calls (5/5). Prompt-level fixes all fail (measured).
+
+Probe matrix (probe_overcall.py / probe_overcall2.py, live on each checkpoint):
+- P1 1-round -> prose, P2 2 rounds diff tools w/ prose between, P3 2 rounds
+  same tool WITH prose+user turns between: all fine on v5e (0 over-calls).
+- P7 BARE chained 2-round same tool (NO prose, NO user turn between rounds):
+  10/10 over-call on v5e. P13 (q answered by round 1, chained anyway): 5/5.
+- P5 easy question + tools present: 5/5 over-trigger with hallucinated args.
+
+Root cause (data census): the v4 serving shape has ZERO training rows of
+[user "Tool result: ..."] -> [assistant CALL]. Stage-4/toolace supervise
+result->CALL only in the OLD rendering (results as python_output inside the
+assistant turn; 612 hermes + 650 toolace rows). glaive prose-only rounds
+(tools present, no call) are 1,650 of 33,484 (4.9%) — swamped, hence the
+over-trigger. When the model itself emits a bare chain it goes
+off-distribution and keeps chaining.
+
+ALSO FOUND + FIXED: chat_template v4 joined multi-tool schemas with NO
+newline (the {{ '\n' }} between tools was emitted at top level and lost);
+Stage-4 training joins with '\n' (render_tools_prompt). Template v5 joins
+inside the block; byte-match vs the training render confirmed under
+transformers 5.17.
+
+Retrain ladder (all from v5e ckpt 60, 60 steps, GPU 3, ctx 8192):
+  v5f ToolStop x3 (bare-chain-then-stop 45/spurious 20/no-tool 20/1-round 15)
+      -> P7 fixed 0/10 but P1/T2 REGRESSED (result->CALL over-taught)
+  v5g rebalanced (38/35/15/12) -> P7 fixed, P1 still 5/5
+  v5h C+D only (no-tool 50/1-round 50, ZERO result->CALL rows)
+      -> P1..P4,P6,P9,P10 clean but P7 back to 10/10
+  v5i (no-tool 70/1-round 30, x4) -> P5 over-trigger still 5/5
+  v5j (+C' toolish-no-tool rows 35, x4) -> BEST: P7 0/10, P13 0/5,
+      P1/P2/P3/P4/P6/P9/P10 clean, 4-turn OpenAI loop all correct
+  v5k (C 50/C' 20/D 30, x2, longctx x3) -> P7 back to 10/10 (re-dominated);
+      v5j redeployed.
+
+Fundamental tension (measured): with [result][assistant_start] and no user
+turn, a 2B model cannot locally distinguish "chain" from "stop". Any
+result->CALL rows in the v4 shape flip P1; zero such rows flip P7. v5j's
+toolish-no-tool rows shift the boundary enough to fix P7 while keeping
+1-round behavior.
+
+Gates on served v5j: over-call P7 0/10 (was 10/10), P13 0/5 (was 5/5),
+P1/P2/P3/P4 0 over-calls, P6 5/5 calls, 4-turn loop correct end-to-end.
+Conformant suite 6/9 (v5e was 7/9): multi_tool 24k REGRESSED to search_web
+(C' over-generalization); NIAH 24k/64k, doc_qa 24k/64k, tool short PASS;
+NIAH 105k = window limit; multi_tool 32k + long_summary pre-existing FAILs.
+
+Residuals (logged, not fixed): P5 over-trigger (easy q + tools -> spurious
+call, then answers the tool result not the question — client should drop
+tools= for non-tool queries or accept one wasted call); bare 3-round P11
+5/5 (artificial shape, unreachable when the model never chains); parallel
+multi-call parser artifact; tool_choice=none leak.
+
+Artifacts: tasks/toolstop.py; chat_template_v5.jinja (master + served);
+run_v5{f..k}.sh, serve_v5{f..k}.sh, probe_overcall{,2}.py (vllm_d28b/);
+checkpoints d28b-128k-sft-v5{f..k}; exports nanochat-d28b-rl100-128k-v5{f..k}
+(config.json patched to 131072 after packing — exporter writes 8192);
+results /data/rowel/test_128k_v5j_results.txt.

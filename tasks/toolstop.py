@@ -211,14 +211,10 @@ class ToolStop(Task):
         #  D 1-round stop: 15%
         for i in range(n_rows):
             u = rng.random()
-            if u < 0.30:
-                ex = self._gen_bare_chain(rng, i, mixed=False)
-            elif u < 0.45:
-                ex = self._gen_bare_chain(rng, i, mixed=True)
-            elif u < 0.65:
-                ex = self._gen_spurious(rng, i)
-            elif u < 0.85:
+            if u < 0.50:
                 ex = self._gen_no_tool(rng, i)
+            elif u < 0.70:
+                ex = self._gen_notool_toolish(rng, i)
             else:
                 ex = self._gen_one_round(rng, i)
             if ex is not None:
@@ -286,8 +282,14 @@ class ToolStop(Task):
                                 "get_air_quality"])
         tools = self._mk_tools(rng, {tool_name})
         nm, args, result, q, ans = _call_for(rng, tool_name)
-        # spurious round: same tool, DIFFERENT entity, never asked about
-        nm2, args2, result2, _, ans2 = _call_for(rng, tool_name)
+        # spurious round: 50% same tool w/ different entity, 50% a DIFFERENT
+        # tool entirely — either way it was never asked about
+        if rng.random() < 0.5:
+            other = rng.choice([t["function"]["name"] for t in _TOOLS
+                                if t["function"]["name"] != tool_name])
+            nm2, args2, result2, _, ans2 = _call_for(rng, other)
+        else:
+            nm2, args2, result2, _, ans2 = _call_for(rng, tool_name)
         if args2 == args:
             return None
         messages = [{"role": "user",
@@ -327,6 +329,38 @@ class ToolStop(Task):
                     {"role": "assistant", "content": a}]
         return {"messages": messages}
 
+    def _gen_notool_toolish(self, rng, i):
+        """(C') tool-LOOKING question answerable from knowledge -> prose.
+        Attacks the exact over-trigger boundary: the question mentions
+        weather/time/cities but asks for general knowledge, not live data."""
+        tools = self._mk_tools(rng, {t["function"]["name"] for t in _TOOLS})
+        qa = rng.choice([
+            ("What is the weather like in Tokyo in summer generally?",
+             "Tokyo summers are hot and humid, typically 25-35C with a rainy season in June."),
+            ("Is London generally colder than Paris?",
+             "Yes, London is generally slightly colder than Paris, especially in winter."),
+            ("What kind of weather does Oslo have in winter?",
+             "Oslo winters are cold and snowy, typically between -10C and 0C."),
+            ("What time zone is Cairo in?",
+             "Cairo is in the Eastern European Time zone (UTC+2)."),
+            ("Does it snow in Berlin?",
+             "Yes, Berlin gets snow most winters, though amounts vary year to year."),
+            ("What's the stock market's role in an economy?",
+             "Stock markets let companies raise capital and let investors buy ownership shares, providing liquidity and price discovery."),
+            ("How do currencies get their exchange rates?",
+             "Exchange rates float based on supply, demand, interest rates and trade balances between the two currencies."),
+            ("Is the air quality usually better in cities with more trees?",
+             "Generally yes — urban trees filter particulates and cool the air, improving measured air quality."),
+            ("What's the difference between weather and climate?",
+             "Weather is the short-term state of the atmosphere; climate is the long-term average of weather over decades."),
+            ("Do stock prices trade on weekends?",
+             "No, major stock exchanges are closed on weekends; prices only move when markets are open."),
+        ])
+        messages = [{"role": "user",
+                     "content": qa[0] + "\n\n" + render_tools_prompt(tools)},
+                    {"role": "assistant", "content": qa[1]}]
+        return {"messages": messages}
+
     def _gen_one_round(self, rng, i):
         """(D) 1 round then stop (reinforce the working behavior)."""
         tool_name = rng.choice([t["function"]["name"] for t in _TOOLS])
@@ -343,7 +377,7 @@ class ToolStop(Task):
         return self.length
 
     def get_example(self, index):
-        return self.examples
+        return self.examples[index]
 
     def evaluate(self, conversation, assistant_response):
         raise NotImplementedError("SFT data task; scoring not used in training")
