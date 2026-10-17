@@ -107,3 +107,56 @@ run_v5{f..k}.sh, serve_v5{f..k}.sh, probe_overcall{,2}.py (vllm_d28b/);
 checkpoints d28b-128k-sft-v5{f..k}; exports nanochat-d28b-rl100-128k-v5{f..k}
 (config.json patched to 131072 after packing — exporter writes 8192);
 results /data/rowel/test_128k_v5j_results.txt.
+
+
+## 2026-10-17 (late) — multi_tool re-anchor: root cause found, v5r deployed
+
+Task: serve the latest checkpoint supporting multi-tool call. v5j had regressed
+multi_tool 24k (search_web instead of get_weather). Ladder v5l..v5q isolated the
+mechanism; v5r fixes it and is now served on port 8000.
+
+Ladder (all from v5e ckpt 60, 60 steps):
+  v5l ToolStop + E doc-call rows (C35/C'25/D30/E10) -> multi_tool 24k/32k PASS
+      BUT P7 over-call re-flipped 10/10. E rows re-tipped the call boundary.
+  v5m rebalanced (C40/C'30/D20/E10) -> same: multi_tool PASS, P7 re-flipped.
+  v5n exact v5j dist + multi_tool-only LongCtx oversample x2 (seed 4243)
+      -> P7 fine but multi_tool 24k STILL search_web (count is not the lever).
+  v5o weather-forced oversample (multi_tool_weather family, randrange pinned)
+      -> still search_web for EVERY city (not city memorization; 4k passes,
+      8k+ fails even with NO mention in the doc).
+  v5p weather-flavored C' templates removed -> still search_web.
+  v5q max-seq-len 24576 -> still search_web (level-1 rows are 31.2k tokens,
+      still truncated -> still skipped).
+  v5r max-seq-len 32768 -> multi_tool 24k PASS (get_weather/Oslo/Celsius),
+      P7 0/10, P13 0/5, P1 5/5, 4-turn loop correct. DEPLOYED.
+
+ROOT CAUSE (measured): every touch-up since v5f trained at max-seq-len 8192.
+Level-1 multi_tool rows render to ~31.2k tokens (the 1.3 tok/word estimate is
+off for this filler vocab), so render_conversation(8192) cut the assistant CALL
+target off -> mask sum 0 -> refill() skipped the row. The touch-ups never saw a
+single 24k doc->CALL row; the 24k behavior drifted to the search_web attractor
+("{city} logistics bulletin" is a memorized training target). v5e's original
+stage7b-v5 run trained at max_seq_len=131072 and saw the rows in full — hence
+v5e passed 24k and every touch-up failed. The 4k (level-0) rows always fit,
+which is why 4k kept passing everywhere.
+
+Also fixed: --mt-extra-epochs flag (multi_tool-only LongCtx copies) and the
+multi_tool_weather family (randrange-pinned weather branch) in
+tasks/longctx_sft.py; _gen_doc_call (E shape) kept in tasks/toolstop.py
+(unreferenced at 0%); C' weather templates replaced with neutral finance/time
+ones (kept: they are harmless, but the E/C' levers were not the mechanism).
+
+v5r gates: multi_tool 24k PASS, 32k FAIL (pre-existing, v5e also failed; the
+32k eval renders ~41k tokens, beyond the touch-up's 31.2k rows), NIAH 24k/64k
+PASS, doc_qa 24k/64k PASS, tool short PASS, long_summary FAIL (pre-existing),
+P7 0/10, P13 0/5, P1 5/5, LOOP correct. Val bpb 0.392691 (v5j 0.425338 — the
+24k val rows now fit and are supervised, so the numbers are not comparable).
+
+Serving: nanochat-d28b-rl100-128k-v5r (served name nanochat-d28b-rl100),
+GPU 7 (GPU 5 was crowded by other jobs), port 8000, template v5, parser
+nanochat. Checkpoints/exports v5l..v5r kept for rollback.
+
+Artifacts: run_v5{l..r}.sh; pack_v5{l..r}.sh, serve_v5{l..r}.sh,
+chain_v5{l..r}.sh, verify_v5{l..r}.py, patch_config_131072.py (vllm_d28b/);
+results /data/rowel/test_128k_v5{r}_results.txt + test_128k_v5j_results.txt
+(overwritten by the v5r conformant run).

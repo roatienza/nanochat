@@ -200,6 +200,24 @@ def _gen_multi_tool(rng, level, i):
     return prompt, target
 
 
+def _gen_multi_tool_weather(rng, level, i):
+    """multi_tool with the weather branch FORCED (tool_idx=0). Used by the
+    --mt-extra-epochs re-anchor copies: v5j/v5n regressions pick search_web
+    ("{city} logistics bulletin" is a memorized training target); oversampling
+    the weather branch restores the get_weather mapping without new shapes."""
+    saved = random.Random(rng.random())
+    # _gen_multi_tool picks the branch with rng.randrange(2); force weather by
+    # temporarily pinning randrange to 0
+    orig = random.Random.randrange
+    class _PinRng(random.Random):
+        def randrange(self, *a):
+            if a == (2,):
+                return 0
+            return orig(self, *a)
+    pin = _PinRng(rng.random())
+    return _gen_multi_tool(pin, level, i)
+
+
 def _gen_long_summary(rng, level, i):
     """Teaches long GENERATION: summarize a long report; target is a real
     multi-sentence summary so the model does not EOS after a few tokens."""
@@ -230,6 +248,7 @@ GENERATORS = {
     "niah": _gen_niah,
     "doc_qa": _gen_doc_qa,
     "multi_tool": _gen_multi_tool,
+    "multi_tool_weather": _gen_multi_tool_weather,
     "long_summary": _gen_long_summary,
 }
 

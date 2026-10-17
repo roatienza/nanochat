@@ -53,6 +53,8 @@ parser.add_argument("--device-batch-size", type=int, default=1)
 parser.add_argument("--total-batch-size", type=int, default=262144)
 parser.add_argument("--num-iterations", type=int, default=600, help="-1 = one epoch over the mixture")
 parser.add_argument("--longctx-epochs", type=int, default=2, help="copies of LongContextSFT in the mixture")
+parser.add_argument("--mt-extra-epochs", type=int, default=0,
+                    help="extra multi_tool-only LongContextSFT copies (re-anchor without new row shapes)")
 parser.add_argument("--longctx-families", type=str, default="niah,doc_qa,multi_tool,long_summary")
 parser.add_argument("--levels", type=str, default="1,2,3",
                     help="comma-separated LongContextSFT levels (0 = short ~4k rows)")
@@ -243,6 +245,11 @@ if args.glaive_mr_epochs > 0:
     from tasks.glaive_multiround import GlaiveMultiRound
     for _ in range(args.glaive_mr_epochs):
         train_tasks.append(GlaiveMultiRound(split="train", max_rows=20000))
+if args.mt_extra_epochs > 0:
+    for _ in range(args.mt_extra_epochs):
+        train_tasks.append(LongContextSFT(families=("multi_tool_weather",), levels=_levels,
+                                          instances_per_level=args.instances_per_level,
+                                          seed=4243))
 if args.toolstop_epochs > 0:
     from tasks.toolstop import ToolStop
     for _ in range(args.toolstop_epochs):

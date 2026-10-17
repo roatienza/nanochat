@@ -203,15 +203,14 @@ class ToolStop(Task):
         super().__init__(**kwargs)
         rng = random.Random(seed)
         self.examples = []
-        # distribution over shapes:
-        #  A bare-chain-then-stop (2-3 rounds, same tool): 30%
-        #  A' bare-chain-then-stop (2-3 rounds, mixed tools): 15%
-        #  B spurious extra round (question answered early): 20%
-        #  C no-tool-needed (easy q, tools present): 20%
-        #  D 1-round stop: 15%
+        # distribution over shapes (v5n = exact v5j dist; multi_tool re-anchored
+        #  via --mt-extra-epochs instead of the E rows, which re-flipped P7):
+        #  C no-tool-needed (easy q, tools present): 35%
+        #  C' toolish-no-tool (boundary rows): 35%
+        #  D 1-round stop: 30%
         for i in range(n_rows):
             u = rng.random()
-            if u < 0.50:
+            if u < 0.35:
                 ex = self._gen_no_tool(rng, i)
             elif u < 0.70:
                 ex = self._gen_notool_toolish(rng, i)
@@ -335,30 +334,68 @@ class ToolStop(Task):
         weather/time/cities but asks for general knowledge, not live data."""
         tools = self._mk_tools(rng, {t["function"]["name"] for t in _TOOLS})
         qa = rng.choice([
-            ("What is the weather like in Tokyo in summer generally?",
-             "Tokyo summers are hot and humid, typically 25-35C with a rainy season in June."),
-            ("Is London generally colder than Paris?",
-             "Yes, London is generally slightly colder than Paris, especially in winter."),
-            ("What kind of weather does Oslo have in winter?",
-             "Oslo winters are cold and snowy, typically between -10C and 0C."),
             ("What time zone is Cairo in?",
              "Cairo is in the Eastern European Time zone (UTC+2)."),
-            ("Does it snow in Berlin?",
-             "Yes, Berlin gets snow most winters, though amounts vary year to year."),
+            ("How do stock splits work?",
+             "A stock split divides each share into multiple ones, lowering the per-share price while keeping total value unchanged."),
+            ("What does GDP stand for and measure?",
+             "Gross Domestic Product measures the total value of goods and services an economy produces in a period."),
+            ("What is the difference between a stock and a bond?",
+             "A stock is ownership in a company; a bond is a loan to it that pays fixed interest."),
+            ("How do time zones offset from UTC?",
+             "Time zones offset from UTC by whole or half hours, usually aligned with country or region borders."),
+            ("What is inflation in simple terms?",
+             "Inflation is the general rise in prices over time, which lowers what one unit of money buys."),
             ("What's the stock market's role in an economy?",
              "Stock markets let companies raise capital and let investors buy ownership shares, providing liquidity and price discovery."),
             ("How do currencies get their exchange rates?",
              "Exchange rates float based on supply, demand, interest rates and trade balances between the two currencies."),
             ("Is the air quality usually better in cities with more trees?",
              "Generally yes — urban trees filter particulates and cool the air, improving measured air quality."),
-            ("What's the difference between weather and climate?",
-             "Weather is the short-term state of the atmosphere; climate is the long-term average of weather over decades."),
+            ("What is compound interest in simple terms?",
+             "Compound interest is interest earned on both the original amount and the interest already added, so growth accelerates."),
             ("Do stock prices trade on weekends?",
              "No, major stock exchanges are closed on weekends; prices only move when markets are open."),
         ])
         messages = [{"role": "user",
                      "content": qa[0] + "\n\n" + render_tools_prompt(tools)},
                     {"role": "assistant", "content": qa[1]}]
+        return {"messages": messages}
+
+    def _gen_doc_call(self, rng, i):
+        """(E) doc-reading anchor (multi_tool re-anchor, v5l): a short
+        operational report with an Operational note naming the field office
+        (city) and reporting unit; tools present; the CORRECT behavior is to
+        read the note and emit CALL get_weather {city, unit}. Re-anchors the
+        multi_tool family (v5j regressed it to search_web) WITHOUT adding any
+        result->CALL rows (which would flip P1) and without longctx copies
+        (which re-dominate and re-flip P7)."""
+        tools = self._mk_tools(rng, {"get_weather", "search_web"})
+        city = rng.choice(_CITIES)
+        unit = _fmt_temp(rng)
+        n_words = rng.randint(120, 400)
+        words = []
+        vocab = ("quarterly logistics maintenance staffing budget safety "
+                 "inventory compliance training operations schedule review "
+                 "shipment warehouse distribution procurement audit regional "
+                 "coordinator facility throughput seasonal demand forecast").split()
+        while len(words) < n_words:
+            words += rng.sample(vocab, min(len(vocab), 12))
+        pos = int(n_words * rng.uniform(0.3, 0.8))
+        words.insert(pos, "Operational note: the field office for this quarter is based in "
+                          f"{city}, and all meteorological readings must be reported in {unit}.")
+        text = " ".join(words)
+        OB, CB = chr(91), chr(93)
+        tools_json = json.dumps(tools, separators=(",", ":"))
+        prompt = ("You are a function calling AI model. You are provided with function "
+                  "signatures within " + OB + "tools" + CB + tools_json + OB + "/tools" + CB +
+                  ". You may call one or more functions to assist with the user query.\n\n"
+                  "Below is a short operational report. Read it carefully.\n\n" + text +
+                  "\n\nBased on the report, make the single tool call that the operational "
+                  "note requires. Reply with one line of the form CALL name {json arguments}.")
+        target = "CALL get_weather " + json.dumps({"city": city, "unit": unit}, separators=(",", ":"))
+        messages = [{"role": "user", "content": prompt},
+                    {"role": "assistant", "content": target}]
         return {"messages": messages}
 
     def _gen_one_round(self, rng, i):
