@@ -66,6 +66,8 @@ parser.add_argument("--smoltalk-cap", type=int, default=0,
                     help="cap SmolTalk train rows via Task slicing (0 = no cap)")
 parser.add_argument("--glaive-mr-epochs", type=int, default=0,
                     help="copies of GlaiveMultiRound (result->answer->re-ask->call) in the mixture")
+parser.add_argument("--toolstop-epochs", type=int, default=0,
+                    help="copies of ToolStop (bare-chain-then-stop, no-tool-needed) in the mixture")
 parser.add_argument("--smoltalk-epochs", type=int, default=1)
 parser.add_argument("--embedding-lr", type=float, default=0.072, help="0.24x of pretrain (SFT-ish)")
 parser.add_argument("--unembedding-lr", type=float, default=0.0019)
@@ -241,13 +243,18 @@ if args.glaive_mr_epochs > 0:
     from tasks.glaive_multiround import GlaiveMultiRound
     for _ in range(args.glaive_mr_epochs):
         train_tasks.append(GlaiveMultiRound(split="train", max_rows=20000))
+if args.toolstop_epochs > 0:
+    from tasks.toolstop import ToolStop
+    for _ in range(args.toolstop_epochs):
+        train_tasks.append(ToolStop(n_rows=6000, seed=777))
 for _ in range(args.smoltalk_epochs):
     st = SmolTalk(split="train", stop=args.smoltalk_cap or None)  # Task(start,stop) view
     train_tasks.append(st)
 train_dataset = TaskMixture(train_tasks)
 print0(f"Training mixture: {len(train_dataset):,} rows (LongCtx x{args.longctx_epochs}, "
        f"ToolCalling x{args.toolcall_epochs}, ToolACE x{args.toolace_epochs}, "
-       f"FollowUp x{args.followup_epochs}, SmolTalk x{args.smoltalk_epochs})")
+       f"FollowUp x{args.followup_epochs}, GlaiveMR x{args.glaive_mr_epochs}, "
+       f"ToolStop x{args.toolstop_epochs}, SmolTalk x{args.smoltalk_epochs})")
 val_dataset = TaskMixture([
     LongContextSFT(levels=(1,), instances_per_level=4, seed=999),
     ToolCalling(split="val"),
