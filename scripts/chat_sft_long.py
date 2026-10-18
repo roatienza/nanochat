@@ -72,6 +72,8 @@ parser.add_argument("--toolstop-epochs", type=int, default=0,
                     help="copies of ToolStop (bare-chain-then-stop, no-tool-needed) in the mixture")
 parser.add_argument("--harness-epochs", type=int, default=0,
                     help="copies of HarnessReplay (long technical history + vague final turn) in the mixture")
+parser.add_argument("--harness-basics-epochs", type=int, default=0,
+                    help="copies of HarnessBasics (fresh-session no-call boundary + correct routing) in the mixture")
 parser.add_argument("--smoltalk-epochs", type=int, default=1)
 parser.add_argument("--embedding-lr", type=float, default=0.072, help="0.24x of pretrain (SFT-ish)")
 parser.add_argument("--unembedding-lr", type=float, default=0.0019)
@@ -260,6 +262,10 @@ if args.harness_epochs > 0:
     from tasks.harness_replay import HarnessReplay
     for _ in range(args.harness_epochs):
         train_tasks.append(HarnessReplay(n_rows=6000, seed=909))
+if args.harness_basics_epochs > 0:
+    from tasks.harness_basics import HarnessBasics
+    for _ in range(args.harness_basics_epochs):
+        train_tasks.append(HarnessBasics(n_rows=8000, seed=1010))
 for _ in range(args.smoltalk_epochs):
     st = SmolTalk(split="train", stop=args.smoltalk_cap or None)  # Task(start,stop) view
     train_tasks.append(st)
@@ -268,6 +274,7 @@ print0(f"Training mixture: {len(train_dataset):,} rows (LongCtx x{args.longctx_e
        f"ToolCalling x{args.toolcall_epochs}, ToolACE x{args.toolace_epochs}, "
        f"FollowUp x{args.followup_epochs}, GlaiveMR x{args.glaive_mr_epochs}, "
        f"ToolStop x{args.toolstop_epochs}, HarnessReplay x{args.harness_epochs}, "
+       f"HarnessBasics x{args.harness_basics_epochs}, "
        f"SmolTalk x{args.smoltalk_epochs})")
 val_dataset = TaskMixture([
     LongContextSFT(levels=(1,), instances_per_level=4, seed=999),
