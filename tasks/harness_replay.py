@@ -522,17 +522,9 @@ class HarnessReplay(Task):
         if sys_p is not None:
             msgs = [{"role": "system", "content": sys_p}] + msgs
 
-        # tools go into the FIRST user turn (template v5 placement). With no
-        # history, that turn is the final turn itself (fresh session).
-        first_user_idx = 1 if sys_p is not None else 0
+        # v6 placement: the tools block rides the FINAL user turn (the turn
+        # that acts), matching template v6 and the harness's acting turn.
         tools_txt = render_tools_prompt(tools) if tools is not None else None
-        if len(msgs) == first_user_idx:
-            # no history: the final user turn IS the first user turn; append a
-            # placeholder that the final-turn code below fills.
-            msgs.append({"role": "user", "content": None})
-        if tools_txt is not None and msgs[first_user_idx]["content"] is not None:
-            msgs[first_user_idx]["content"] = (msgs[first_user_idx]["content"] + "\n\n" + tools_txt)
-            tools_txt = None  # already placed
         # Shape shares (v5u): H1 social 30%, H2 easy 20%, H3 toolish->CALL 15%
         # (schema-driven mapping), H4 date-from-system 12%, H6 toolish-no-call
         # 13%, H7 summarize 10%. v5s had H3 25% with a FIXED weather->web_search
@@ -579,11 +571,8 @@ class HarnessReplay(Task):
                          "flaw": rng.choice(_FLAWS), "dir": rng.choice(_DIRS),
                          "verdict": rng.choice(_VERDICTS)}
                 a = rng.choice(_ANSWER_TEMPLATES)(rng, topic)[1]
-        if msgs[-1]["content"] is None:
-            # the fresh-session placeholder becomes the final user turn
-            msgs[-1]["content"] = q + (("\n\n" + tools_txt) if tools_txt else "")
-        else:
-            msgs.append({"role": "user", "content": q})
+        # v6: the final user turn carries the tools block (the acting turn)
+        msgs.append({"role": "user", "content": q + (("\n\n" + tools_txt) if tools_txt else "")})
         msgs.append({"role": "assistant", "content": a})
         return {"messages": msgs}
 

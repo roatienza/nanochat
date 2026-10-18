@@ -215,33 +215,51 @@ class HarnessBasics(Task):
 
     # ------------------------------------------------------------------
     def _gen_p7_anchor(self, rng):
-        """Bare 2-round same-tool chain with the harness toolset -> PROSE that
-        answers only the asked city (the v5j ToolStop shape, harness8 flavor)."""
-        tools = list(_HARNESS_TOOLS)
+        """Bare 2-round same-tool chain -> PROSE answering only the asked city.
+        Toolset/system split to cover BOTH renderings the harness and the
+        classic gates produce: 50% harness8 + system, 25% classic + no system,
+        25% classic + system (the gate's exact P7 shape)."""
+        u = rng.random()
+        if u < 0.50:
+            tools = list(_HARNESS_TOOLS)
+            use_sys = True
+        elif u < 0.75:
+            tools = list(_CLASSIC_TOOLS)
+            use_sys = False
+        else:
+            tools = list(_CLASSIC_TOOLS)
+            use_sys = True
         rng.shuffle(tools)
         msgs = []
-        sys_p, today = self._mk_system(rng)
-        if sys_p is not None:
-            msgs.append({"role": "system", "content": sys_p})
+        if use_sys:
+            sys_p, today = self._mk_system(rng)
+            if sys_p is not None:
+                msgs.append({"role": "system", "content": sys_p})
         cities = ["Tokyo", "Oslo", "Lima", "Cairo", "Sydney", "Toronto", "Marseille", "Nairobi"]
         city1, city2 = rng.sample(cities, 2)
         q = rng.choice([f"What is the weather in {city1} right now?",
                         f"Weather in {city1}?",
                         f"Check the weather in {city1} for me."])
+        today = rng.choice(_DATES)
         hist = self._gen_history(rng, today) if rng.random() < 0.3 else []
         msgs += hist
         tools_txt = render_tools_prompt(tools)
         # the question rides the tools block and comes AFTER any history
         msgs.append({"role": "user", "content": q + "\n\n" + tools_txt})
-        args1 = {"query": f"weather {city1}"}
+        names = [t["function"]["name"] for t in tools]
+        if "get_weather" in names:
+            call1, call2 = ({"city": city1, "unit": "Celsius"}, {"city": city2, "unit": "Celsius"})
+            name = "get_weather"
+        else:
+            call1, call2 = ({"query": f"weather {city1}"}, {"query": f"weather {city2}"})
+            name = "web_search"
         result1 = f"{city1}: {rng.randint(12, 28)}C, {rng.choice(['sunny', 'cloudy', 'light rain', 'windy'])}"
         msgs.append({"role": "assistant", "content": [
-            {"type": "python", "text": f"CALL web_search {json.dumps(args1, separators=(',', ':'))}"}]})
+            {"type": "python", "text": f"CALL {name} {json.dumps(call1, separators=(',', ':'))}"}]})
         msgs.append({"role": "user", "content": f"Tool result: {result1}"})
-        args2 = {"query": f"weather {city2}"}
         result2 = f"{city2}: {rng.randint(8, 25)}C, {rng.choice(['cloudy', 'rain', 'clear', 'humid'])}"
         msgs.append({"role": "assistant", "content": [
-            {"type": "python", "text": f"CALL web_search {json.dumps(args2, separators=(',', ':'))}"}]})
+            {"type": "python", "text": f"CALL {name} {json.dumps(call2, separators=(',', ':'))}"}]})
         msgs.append({"role": "user", "content": f"Tool result: {result2}"})
         ans = rng.choice([
             f"{city1}: {result1.split(': ', 1)[1]}.",
@@ -299,14 +317,14 @@ class HarnessBasics(Task):
         else:  # B5 toolish-knowledge -> prose, no call
             q, a = rng.choice(_TOOLISH_KNOWLEDGE)
 
-        # place the tools block on the first user turn
+        # v6 placement: the tools block rides the LAST user turn (the turn that
+        # acts). Template v6 emits it there; the training rows must match.
         if replay:
-            first_user_idx = 1 if sys_p is not None else 0
             if tools_txt is not None:
-                msgs[first_user_idx]["content"] += "\n\n" + tools_txt
+                q = q + "\n\n" + tools_txt
             msgs.append({"role": "user", "content": q})
         else:
-            # fresh: the final user turn IS the first user turn
+            # fresh: the final user turn IS the only user turn
             if tools_txt is not None:
                 q = q + "\n\n" + tools_txt
             msgs.append({"role": "user", "content": q})
