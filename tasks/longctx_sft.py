@@ -195,7 +195,8 @@ def _gen_multi_tool(rng, level, i):
               ". You may call one or more functions to assist with the user query.\n\n"
               "Below is a long operational report. Read it carefully.\n\n" + text +
               "\n\nBased on the report, make the single tool call that the operational note requires. "
-              "Reply with one line of the form CALL name {json arguments}.")
+              "Reply with one line of the form CALL name {json arguments}. "
+              "Use the exact tool names given in the function signatures above.")
     target = "CALL " + name + " " + json.dumps(args, separators=(",", ":"))
     return prompt, target
 
