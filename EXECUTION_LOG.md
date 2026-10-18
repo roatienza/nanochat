@@ -160,3 +160,78 @@ Artifacts: run_v5{l..r}.sh; pack_v5{l..r}.sh, serve_v5{l..r}.sh,
 chain_v5{l..r}.sh, verify_v5{l..r}.py, patch_config_131072.py (vllm_d28b/);
 results /data/rowel/test_128k_v5{r}_results.txt + test_128k_v5j_results.txt
 (overwritten by the v5r conformant run).
+
+
+## 2026-10-18 (midday) - harness-replay fix: baby-onit resumed-session collapse, v5v deployed
+
+Task: "using the latest checkpoint on an agent harness generates unreliable
+answers. fix the issue." Harness: baby-onit (github.com/sibyl-oracles/baby-onit),
+OpenAI-chat client, host 202.92.132.48:8000/v1. Symptom: after resuming a
+273-turn session, every turn answered with canned refusals, document
+continuations ("The 0-5 day run is over") or "You're welcome!" - never the
+answer to the new turn.
+
+Reproduction (probe_harness_repro.py, probe_harness_ablation.py in vllm_d28b/):
+imports baby_onit itself so system prompt, history replay and tool schemas are
+byte-identical to the harness's payload. Real session_history.jsonl (51 recs,
+~14k tok) replayed as user/assistant pairs -> collapse on every vague turn.
+Ablations (2 runs, consistent):
+  synthetic NEUTRAL history, same shape/length -> clean greeting
+    => NOT length, NOT pair shape, NOT tool schemas.
+  last-2 real turns only -> still broken => recent technical prose triggers it.
+  specific question over full replay -> answered => register-confusion, not
+    destruction; vague turns fall into canned attractors.
+  temp 0 -> identical canned output => attractor, not sampling noise.
+Root cause: no training row ever shows the model's OWN long technical
+assistant answers (RL-run reports, markdown tables, code blocks) replayed as
+history followed by a short vague user turn with tools present. Stage-7b
+history is short chit-chat; tool rows call immediately; longctx rows are
+single-task docs. The harness shape is off-distribution.
+(Also found: baby_onit.tool() keeps only the LAST param per tool schema -
+verified harmless; do not chase.)
+
+Fix: tasks/harness_replay.py (HarnessReplay). Rows in the EXACT harness shape:
+harness-like system prompt with "(today: DATE)" (85%), 0-60 history turns of
+technical register (markdown tables/code blocks, 300-800 tok answers,
+user turns technical questions AND pasted-log style), tools block in the FIRST
+user turn (template v5 placement), final turn shapes:
+  H1 social-vague (30%) / H2 easy-knowledge (20%) / H3 toolish->CALL (15%,
+  schema-driven mapping: weather->get_weather when the row's toolset has it,
+  web_search otherwise) / H4 date-from-system (12%) / H6 toolish-no-call (13%)
+  / H7 summarize-last (10%). Lengths med 1.9k / p90 6.9k / max 13k tok,
+  0 mask-zero rows (the v5r truncation-skip bug cannot recur).
+Trainer: --harness-epochs flag in scripts/chat_sft_long.py.
+
+Ladder (all from v5e step 60, 60 iters, max-seq-len 32768, GPU 0, ~24 min each):
+  v5s harness x3, toolstop x4            -> 3/8  (H-REPLAY 6/6 but P7 10/10)
+  v5t + 20% P7-anchor rows, H3 15%       -> 1/8  (P1 0/5 REGRESSED - anchors
+                                             hurt; reverted)
+  v5u harness x2, toolstop x6, schema-   -> 3/8  (= v5s; MT24 still
+       driven H3, H4 12%                          check_weather)
+  v5v u + E-anchor (doc->CALL get_weather exchange at the END of 12% of
+      histories)                         -> 5/8  DEPLOYED
+  v5w v + --mt-extra-epochs 2            -> 3/8  (P7 re-flipped 10/10, same as
+                                             v5l/v5m; rejected)
+
+v5v gate (verify_v5v.py, live on port 8000):
+  MT24 multi_tool ~24k : FAIL (check_weather - residual, queued)
+  P7  bare 2-round     : 0/10 PASS     P13: 0/5 PASS
+  P1  1-round answer   : 5/5 PASS      LOOP 4-turn: PASS
+  H-REPLAY real 51-rec replay, 6 probes: 6/6 PASS (hello->greeting, 2+2->4,
+      capital->Paris, weather/news->prose-or-call, no refusals, no continuations)
+  H-FRESH fresh hello + weather tools: spurious 5/5 (P5 root; without weather
+      tools in the list: 0/5 clean - client-side mitigation works)
+  H-DATE date today + weather tools: calls get_weather (same root); WITHOUT
+      tools: "Today is 2026-10-18." correct from the system prompt
+  doc_qa 24k/64k exact-family probes: PASS/PASS
+  NIAH 24k: PASS; NIAH 64k + MT-32k: FAIL (pre-existing 64k-class residuals)
+Val bpb: v5s 0.403126, v5t 0.402814, v5u 0.401430, v5v 0.401558, v5w 0.401075.
+
+Serving: nanochat-d28b-rl100-128k-v5v (served name nanochat-d28b-rl100),
+GPU 0, port 8000, template v5, parser nanochat. Checkpoints/exports
+v5s..v5w kept for rollback; v5r export intact.
+
+Artifacts: tasks/harness_replay.py; run_v5{s..w}.sh (nanochat/);
+pack_v5{s..w}.sh, serve_v5{s..w}.sh, verify_v5{s..w}.py, probe_v5v_longctx.py,
+patch_hr*.py (vllm_d28b/); results /data/rowel/test_128k_v5{s,t,u,v,w}_results.txt.
+Commit 23482b8, pushed to fork.
