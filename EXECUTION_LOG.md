@@ -235,3 +235,44 @@ Artifacts: tasks/harness_replay.py; run_v5{s..w}.sh (nanochat/);
 pack_v5{s..w}.sh, serve_v5{s..w}.sh, verify_v5{s..w}.py, probe_v5v_longctx.py,
 patch_hr*.py (vllm_d28b/); results /data/rowel/test_128k_v5{s,t,u,v,w}_results.txt.
 Commit 23482b8, pushed to fork.
+
+## 2026-10-19 — Review from start: the real harness gate (v5x–v6b)
+
+The user reported baby-onit still failing. Cloned the REAL harness
+(/data/rowel/tmp/baby-onit), reproduced with its exact wire shape, and found
+the v5v gates were blind: they ran at temp 0 with 2 classic tools, while the
+harness sends temp 0.6 + 8 real tools. Built verify_v5x.py (15 gates, real
+system prompt + real tools + temp 0.6 + seeds).
+
+Baselines on the REAL gate: v5v 5/15, v5e 3/8 (multi-call blobs).
+
+Root causes (measured):
+1. Mixture imbalance: fresh+tools->CALL 9993 rows vs fresh+tools->prose 281
+   rows (35:1) => "tools present -> call web_search" default. Fixed by
+   tasks/harness_basics.py (HarnessBasics: B1 social/B2 easy/B3 routed CALL/
+   B4 date-from-system/B5 knowledge; fresh 65%/replay 35%).
+2. Routing never taught: files->bash, url->fetch_content etc. Fixed by B3's
+   routing table with absent-tool fallback.
+3. POSITION: with the tools block on the FIRST user turn and long history
+   after it, the model loses block->action association and hallucinates tool
+   names (get_weather/web_news/get_file_path). Verified live: same history +
+   block on the LAST user turn -> correct calls. => chat_template_v6.jinja
+   (block on the last real user turn) + v6-placement training rows.
+4. 60-step touch-ups thrash the boundary (mixture 107k rows; 60 steps see
+   ~15% of one epoch). 240-step runs settle but land on different boundary
+   configs per run.
+
+Ladder on the REAL gate (all 240 iters from v5e@60 unless noted):
+  v5x 60i 5/15, v5y 60i 2/15, v5z 240i 7/15 (P7/P13/P1/F2/F4/R1/R4),
+  v6a 240i 7/15 (R2 3/3 replay routing FIXED; P7 10/10 re-flipped),
+  v6b 240i 5/15 (P7 0/10 held via diversified anchors; F4 0/5 regressed).
+Boundaries compete; no 240-step touch-up satisfies all 15.
+
+DEPLOYED: v6a (nanochat-d28b-rl100-128k-v6a, template v6, GPU 0, port 8000).
+User's exact 5-turn scenario over the real replay now: hello->greeting,
+how are you->reply, weather->CALL web_search, date->system-prompt date,
+news->CALL web_search type=news. (All five were broken before.)
+
+REMAINING (needs full Stage-7b retrain, ~4.5h, to fix): P7 bare-chain stop
+under template v6, LOOP turn-2, MT24 24k search_web drift, F3/F5 routing at
+4/5-3/5. The touch-up scale cannot hold all boundaries at once.
