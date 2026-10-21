@@ -146,12 +146,6 @@ CE_CHUNK = args.ce_chunk
 # contains a checkpoint region either fails to trace or loses the
 # recomputation. Compiling the block body keeps the checkpointing intact
 # while still fusing the attention and MLP matmuls.
-_COMPILE = os.environ.get("NANOCHAT_COMPILE", "1") != "0"
-if _COMPILE:
-    _group_forward = torch.compile(_group_forward, dynamic=False)
-    print0("torch.compile: enabled (per-block)")
-
-
 def _group_forward(model, idx, cos_sin, x_in, lo, hi):
     x = x_in
     for i in range(lo, hi):
@@ -171,6 +165,17 @@ def _group_forward(model, idx, cos_sin, x_in, lo, hi):
             out[:, s:e] = blk.mlp.c_proj(h)
         x = x + out
     return x
+
+# The compile has to happen AFTER _group_forward is defined: assigning
+# torch.compile(_group_forward) before the def raises NameError at import
+# time. This block used to sit ABOVE the def, so every run of this script
+# died with "name '_group_forward' is not defined" -- the stage-7b/8/9
+# runs that produced the shipped checkpoints predate the compile change.
+_COMPILE = os.environ.get("NANOCHAT_COMPILE", "1") != "0"
+if _COMPILE:
+    _group_forward = torch.compile(_group_forward, dynamic=False)
+    print0("torch.compile: enabled (per-block)")
+
 
 def longctx_forward_loss(model, idx, targets, loss_reduction="mean"):
     B, T = idx.size()
