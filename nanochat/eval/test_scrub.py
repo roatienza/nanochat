@@ -11,10 +11,11 @@ import sys
 import time
 import urllib.request
 
-sys.path.insert(0, "/home/rowel/github/sibyl/baby-onit")
+BABY_ONIT_DIR = os.environ.get("BABY_ONIT_DIR", "/data/rowel/baby-onit")
+sys.path.insert(0, BABY_ONIT_DIR)
 import baby_onit as B  # noqa: E402
 
-CFG = {"data_path": "/home/rowel/baby-sandbox",
+CFG = {"data_path": os.environ.get("GATE_DATA_DIR", "/data/rowel"),
        "serving": {"history_budget_tokens": 8000}}
 
 RUN48 = re.compile(r"(.)\1{47,}")
@@ -55,7 +56,7 @@ def trim_tail(s: str) -> str:
 
 
 def call(base, msgs, max_tokens=1024, temperature=0.6):
-    body = {"model": "nanochat-d28b-rl100", "messages": msgs,
+    body = {"model": os.environ.get("UTAK_MODEL_NAME", "utak"), "messages": msgs,
             "max_tokens": max_tokens, "temperature": temperature, "top_p": 0.95}
     req = urllib.request.Request(
         base.rstrip("/") + "/v1/chat/completions",
@@ -76,7 +77,10 @@ def show(tag, dt, c, tcs=None):
     print(f"    {c[:160]!r}")
 
 
-base = "http://127.0.0.1:8010"
+# The RAW vLLM endpoint, not the guard: this test compares "scrubbed
+# history" against "poisoned history" at the model level, so the guard's own
+# scrub must not be what fixes it.
+base = os.environ.get("UTAK_RAW_URL", "http://127.0.0.1:8010")
 hist = B.load_session_history(CFG)
 sysmsg = {"role": "system", "content": B.build_system_prompt(CFG)}
 

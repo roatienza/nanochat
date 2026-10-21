@@ -1,0 +1,43 @@
+{
+  "step": 10000,
+  "val_bpb": 0.3438846726450838,
+  "model_config": {
+    "sequence_len": 2048,
+    "vocab_size": 32768,
+    "n_layer": 28,
+    "n_head": 14,
+    "n_kv_head": 14,
+    "n_embd": 1792,
+    "window_pattern": "SSSL"
+  },
+  "user_config": {
+    "run": "stage4-toolace-d28-v3-termcall-reweight",
+    "device_type": "",
+    "model_tag": "d28b-v2",
+    "model_step": 277760,
+    "load_optimizer": 1,
+    "num_iterations": -1,
+    "max_seq_len": null,
+    "device_batch_size": 2,
+    "total_batch_size": 32768,
+    "embedding_lr": null,
+    "unembedding_lr": null,
+    "matrix_lr": null,
+    "init_lr_frac": 0.8,
+    "warmup_ratio": 0.0,
+    "warmdown_ratio": 0.5,
+    "final_lr_frac": 0.0,
+    "eval_every": 250,
+    "save_every": 5000,
+    "eval_tokens": 20971520,
+    "chatcore_every": 200,
+    "chatcore_max_cat": -1,
+    "chatcore_max_sample": 24,
+    "mmlu_epochs": 1,
+    "gsm8k_epochs": 1,
+    "toolcall_epochs": 4,
+    "toolcall_data": null,
+    "toolace_epochs": 6,
+    "toolace_data": null
+  }
+}

@@ -10,7 +10,7 @@ Adapted from export_hf.py (the 2048 rl100 exporter). Differences:
 
 Usage:
   python3 export_hf_128k.py --phase base --tag d28b-128k [--step 2000] \
-      [--out /data/rowel/nanochat_store/v2/vllm_d28b/nanochat-d28b-rl100-128k]
+      [--out /data/rowel/nanochat_store/v2/vllm_d28b/utak-128k]
 """
 import argparse
 import json
@@ -24,7 +24,7 @@ ap.add_argument("--phase", default="base", choices=["base", "sft", "rl"])
 ap.add_argument("--tag", default="d28b-128k")
 ap.add_argument("--step", type=int, default=None, help="default: last model_*.pt in the dir")
 ap.add_argument("--base-dir", default=os.environ.get("NANOCHAT_BASE_DIR", "/data/rowel/nanochat_store/v2"))
-ap.add_argument("--out", default=os.path.join(os.environ.get("NANOCHAT_BASE_DIR", "/data/rowel/nanochat_store/v2"), "vllm_d28b", "nanochat-d28b-rl100-128k"))
+ap.add_argument("--out", default=os.path.join(os.environ.get("NANOCHAT_BASE_DIR", "/data/rowel/nanochat_store/v2"), "vllm_d28b", os.environ.get("UTAK_MODEL_DIR_NAME", "utak-128k")))
 a = ap.parse_args()
 
 phase_dir = {"base": "base_checkpoints", "sft": "chatsft_checkpoints", "rl": "chatrl_checkpoints"}[a.phase]
@@ -96,5 +96,5 @@ with open(os.path.join(a.out, "config.json"), "w") as f:
     json.dump(config, f, indent=2)
 print("wrote", a.out)
 print("next: copy tokenizer.json / tokenizer_config.json / chat_template.jinja and the")
-print("plugin files from nanochat-d28b-rl100/ (they are model-independent), then serve with")
+print("plugin files from serving/model_assets/ (they are model-independent), then serve with")
 print("--max-model-len 131072 --max-num-batched-tokens 131072 --max-num-seqs 1")

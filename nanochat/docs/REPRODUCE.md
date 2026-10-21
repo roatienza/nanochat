@@ -1,12 +1,12 @@
-# REPRODUCE.md — rebuild the served `nanochat-d28b-rl100` (v6j)
+# REPRODUCE.md — rebuild the served `utak` (v6j)
 
 Everything needed to take this tree from "no model" to "the served
-`nanochat-d28b-rl100` on port 8000". The checkpoints themselves are **not**
+`utak` on port 8000". The checkpoints themselves are **not**
 in git (8 GB each); this document tells you how to regenerate them.
 
-**Target:** `nanochat-d28b-rl100` — 2.019 B params, 131 072 ctx, served under
-the name `nanochat-d28b-rl100`, root checkpoint
-`nanochat-d28b-rl100-128k-v6j`.
+**Target:** `utak` — 2.019 B params, 131 072 ctx, served under
+the name `utak`, root checkpoint
+`utak-128k`.
 
 ---
 
@@ -78,28 +78,28 @@ script for those was ever written).
 
 | # | Stage | Output tag | Source | ctx | iters | val bpb |
 |---|---|---|---|---|---|---|
-| 1 | Pretrain | `d28b-v2` | — | 2 048 | 277 760 | 0.715437 |
-| 2 | Context extension | `d28b-128k` | `rl:d28b-rl100@177` | 131 072 | 1 750 | 0.902946 |
-| 2b | Context ext. (final) | `d28b-128k-final` | `base:d28b-128k@1750` | 131 072 | 250 | 0.893391 |
-| 3 | SFT (128k) | `d28b-128k-sft` | `base:d28b-128k-final@250` | 131 072 | 600 | 0.361935 |
-| 3b | SFT (final) | `d28b-128k-sft-final` | `sft:d28b-128k-sft@500` | 131 072 | 100 | 0.355233 |
-| 4 | Touch-up v5 | `d28b-128k-sft-v5` | `base:d28b-128k-final@250` | 131 072 | 800 | 0.524880 |
-| 5 | Touch-up v5b | `d28b-128k-sft-v5e` chain | `sft:…-v5@800` | 8 192 | 120 | 0.421962 |
+| 1 | Pretrain | `utak-base` | — | 2 048 | 277 760 | 0.715437 |
+| 2 | Context extension | `utak-128k` | `rl:utak-rl@177` | 131 072 | 1 750 | 0.902946 |
+| 2b | Context ext. (final) | `utak-128k-final` | `base:utak-128k@1750` | 131 072 | 250 | 0.893391 |
+| 3 | SFT (128k) | `utak-128k-sft` | `base:utak-128k-final@250` | 131 072 | 600 | 0.361935 |
+| 3b | SFT (final) | `utak-128k-sft-final` | `sft:utak-128k-sft@500` | 131 072 | 100 | 0.355233 |
+| 4 | Touch-up v5 | `utak-sft` | `base:utak-128k-final@250` | 131 072 | 800 | 0.524880 |
+| 5 | Touch-up v5b | `utak-sft-a` chain | `sft:…-v5@800` | 8 192 | 120 | 0.421962 |
 | 6 | Touch-up v5c | ″ | `sft:…-v5b@120` | 8 192 | 80 | 0.407229 |
 | 7 | Touch-up v5d | ″ | `sft:…-v5c@80` | 8 192 | 100 | 0.399349 |
 | 8 | Touch-up v5e | ″ | `sft:…-v5d@100` | 8 192 | 60 | 0.397745 |
-| 9 | Touch-up v6a | `d28b-128k-sft-v6a` | `sft:…-v5e@60` | 32 768 | 240 | 0.391964 |
-| 10 | **Touch-up v6j** | **`d28b-128k-sft-v6j`** | `sft:…-v6a@240` | 32 768 | 240 | **0.393419** |
+| 9 | Touch-up v6a | `utak-sft-b` | `sft:…-v5e@60` | 32 768 | 240 | 0.391964 |
+| 10 | **Touch-up v6j** | **`utak-sft-c`** | `sft:…-v6a@240` | 32 768 | 240 | **0.393419** |
 
-The RL branches (GSM8K REINFORCE → `d28b-rl100`, agentic RL → the same tag)
+The RL branches (GSM8K REINFORCE → `utak-rl`, agentic RL → the same tag)
 are part of the upstream tree but **not on the served model's path**: the
-served v6j is a pure SFT touch-up chain rooted at `d28b-128k-final`. They
+served v6j is a pure SFT touch-up chain rooted at `utak-128k-final`. They
 are included because `scripts/chat_rl.py` and `scripts/chat_rl_agentic.py`
-are part of the project and `d28b-128k` was extended *from* the RL
+are part of the project and `utak-128k` was extended *from* the RL
 checkpoint.
 
 > ⚠️ **v5b–v5e have no run script.** Their exact hyperparameters survive
-> only in `docs/checkpoint_meta/d28b-128k-sft-v5{,b,c,d,e}/meta_*.json`.
+> only in `docs/checkpoint_meta/utak-sft{,b,c,d,e}/meta_*.json`.
 > If you re-run them, read the flags from there, not from a script.
 
 ---
@@ -164,21 +164,21 @@ python -m scripts.base_train --run headline-d28-v2 \
   --window-pattern SSSL --device-batch-size 4 --total-batch-size 32768 \
   --embedding-lr 0.3 --unembedding-lr 0.008 --matrix-lr 0.02 --scalar-lr 0.5 \
   --weight-decay 0.28 --warmup-steps 40 --warmdown-ratio 0.65 --final-lr-frac 0.05 \
-  --eval-every 500 --eval-tokens 41943040 --save-every 5000 --model-tag d28b-v2
+  --eval-every 500 --eval-tokens 41943040 --save-every 5000 --model-tag utak-base
 ```
 
 ### 3.2 Context extension (stage 2)
 
-`scripts/base_train_long.py`, 1 750 steps to `d28b-128k` then 250 to
-`d28b-128k-final`. The full flag block is in
-`docs/checkpoint_meta/base_checkpoints/d28b-128k-final/meta_000250.json`
+`scripts/base_train_long.py`, 1 750 steps to `utak-128k` then 250 to
+`utak-128k-final`. The full flag block is in
+`docs/checkpoint_meta/base_checkpoints/utak-128k-final/meta_000250.json`
 (`user_config`).
 
 ### 3.3 SFT (stage 3)
 
 `scripts/chat_sft.py` for the 131 072-ctx SFT, `scripts/chat_sft_long.py`
 for the touch-ups. Flags are in
-`docs/checkpoint_meta/chatsft_checkpoints/d28b-128k-sft/meta_000500.json`.
+`docs/checkpoint_meta/chatsft_checkpoints/utak-128k-sft/meta_000500.json`.
 
 ### 3.4 The touch-up chain (the served model's path)
 
@@ -220,7 +220,7 @@ python -m scripts.chat_rl_agentic --run stage6-pilot   ...   # agentic sandbox
 
 The RL algorithm is REINFORCE with DAPO-style token normalisation;
 advantage = `r − μ` (mean over the sampled group). Output tag
-`d28b-rl100`, step 177.
+`utak-rl`, step 177.
 
 ---
 
@@ -229,7 +229,7 @@ advantage = `r − μ` (mean over the sampled group). Output tag
 ```bash
 cd nanochat/serving
 NANOCHAT_BASE_DIR=/data/rowel/nanochat_store/v2 \
-OUT=/data/rowel/nanochat_store/v2/vllm_d28b/nanochat-d28b-rl100-128k-v6j \
+OUT=/data/rowel/nanochat_store/v2/vllm_d28b/utak-128k \
 ./pack_v6j.sh
 ```
 
@@ -241,7 +241,7 @@ This runs `export_hf_128k.py` (checkpoint → `model.safetensors` +
 The resulting directory:
 
 ```
-nanochat-d28b-rl100-128k-v6j/
+utak-128k/
   model.safetensors            8.07 GB, bf16
   config.json                  nanochat_d28, seq 131072, n_embd 1792
   configuration_nanochat.py    auto_map entry
@@ -264,7 +264,7 @@ nanochat-d28b-rl100-128k-v6j/
 
 ```bash
 cd nanochat/serving
-MODEL_DIR=/data/rowel/nanochat_store/v2/vllm_d28b/nanochat-d28b-rl100-128k-v6j \
+MODEL_DIR=/data/rowel/nanochat_store/v2/vllm_d28b/utak-128k \
 VLLM_BIN=/path/to/venv/bin/vllm \
 PY=/path/to/venv/bin/python \
 GPU=0 \
@@ -291,7 +291,7 @@ client ──▶ :8000  guard_proxy.py    public endpoint, enforces the safety p
 | `--enable-auto-tool-choice` | OpenAI-style tool calling |
 | `--tool-call-parser nanochat` | the model's `CALL name {args}` format is not JSON |
 | `--tool-parser-plugin …/nanochat_tool_parser.py` | the parser that understands it |
-| `--served-model-name nanochat-d28b-rl100` | the name clients ask for |
+| `--served-model-name utak` | the name clients ask for |
 | `--enforce-eager` | no CUDA-graph capture; predictable startup |
 | `--gpu-memory-utilization 0.94` | fits 8 GB of weights at 131 072 ctx |
 
@@ -385,8 +385,8 @@ python test_detector.py && python test_guard_regression.py \
 
 ```
 host          http://<host>:8000/v1
-model         nanochat-d28b-rl100
-root          nanochat-d28b-rl100-128k-v6j
+model         utak
+root          utak-128k
 max_model_len 131072
 params        2,018,511,234
 architecture  28 layers · 14 heads · 14 kv heads (MHA) · n_embd 1792

@@ -1,4 +1,44 @@
 
+> **A note on naming (added 2026-10-21).** This log is a historical record
+> and is left as it was written: the checkpoint tags and the served model
+> name in the entries below are the ORIGINAL ones (`d28b-*`,
+> `nanochat-d28b-rl100`, `v5e`…`v6j`). The model has since been renamed
+> to **`utak`**, and the recipe in [`UTAK_RECIPE.md`](UTAK_RECIPE.md) uses
+> the new names. The mapping is:
+>
+> | original | utak |
+> |---|---|
+> | `nanochat-d28b-rl100` (served name) | `utak` |
+> | `nanochat-d28b-rl100-128k-v6j` (model dir) | `utak-128k` |
+> | `d28b-v2` | `utak-base` |
+> | `d28b-v2` (sft tree) | `utak-sft-tools` |
+> | `d28b-warmup` | `utak-warmup` |
+> | `chatrl/d28b-warmup` | `utak-rl-warmup` |
+> | `chatrl/d28b-rl100` (pilot) | `utak-rl-pilot` |
+> | `chatrl/d28b-rl100` | `utak-rl` |
+> | `d28b-128k` | `utak-128k` |
+> | `d28b-128k-final` | `utak-128k-final` |
+> | `d28b-128k-sft-v5` | `utak-sft` |
+> | `d28b-128k-sft-v5b` | `utak-sft-followup` |
+> | `d28b-128k-sft-v5c` | `utak-sft-glaive` |
+> | `d28b-128k-sft-v5d` | `utak-sft-glaive-heavy` |
+> | `d28b-128k-sft-v5e` | `utak-sft-a` |
+> | `d28b-128k-sft-v6a` | `utak-sft-b` |
+> | `d28b-128k-sft-v6j` | `utak-sft-c` (the served checkpoint) |
+>
+> Two corrections to earlier documentation were found while assembling the
+> recipe, and are recorded in [`UTAK_RECIPE.md`](UTAK_RECIPE.md):
+>
+> 1. **The pre-training run reached step 277,760, not 40,000.** The
+>    technical report and model card previously said 40,000; the checkpoint
+>    metadata (`meta_277760.json`, run `headline-d28-v2`) says 277,760 —
+>    about 7x the stated figure. The step count is derived from
+>    `--target-param-data-ratio 8.0` against the corpus actually present.
+> 2. **The RL chain is three runs, not one.** `utak-rl` (step 177) is the
+>    output of the curriculum run, and it is the checkpoint the 128k
+>    context extension is built from. The earlier report described only
+>    the math-RL stage.
+
 ## 2026-10-16 — Multi-turn tool-result follow-up fixed (v5e served on port 8000)
 
 Root cause chain (all measured):

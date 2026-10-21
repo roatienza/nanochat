@@ -25,17 +25,19 @@ nanochat/eval_bundle/
 nanochat/report.md
 nanochat/.pytest_cache/
 
+# the recipe writes its stage logs here
+nanochat/recipe/logs/
+
 # serving runtime logs (the guard writes these next to guard_proxy.py)
 nanochat/serving/*.log
 nanochat/serving/guard_aborts.log
 nanochat/serving/guard_last_content.txt
 nanochat/serving/*.json.lock
-nanochat/serving/export_v6j.log
 
 # model weights and exports (8 GB each; regenerate with
-# nanochat/serving/pack_v6j.sh)
+# nanochat/recipe/10_pack.sh)
 nanochat/serving/model_assets/model.safetensors
-nanochat/serving/nanochat-d28b-rl100-128k-*/
+nanochat/serving/utak-*/
 *.safetensors
 *.pth
 

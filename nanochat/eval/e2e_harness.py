@@ -30,7 +30,7 @@ async def main():
     tmp = Path(tempfile.mkdtemp(prefix="babyonit-e2e-"))
     cfg = {
         "data_path": str(tmp),
-        "serving": {"provider": "vllm", "host": HOST, "model": "nanochat-d28b-rl100",
+        "serving": {"provider": "vllm", "host": HOST, "model": os.environ.get("UTAK_MODEL_NAME", "utak"),
                     "think": True, "max_tokens": 32768, "max_chat_iterations": -1,
                     "max_context_tokens": 262144, "history_budget_tokens": 8000,
                     "temperature": 0.6, "top_p": 0.95},

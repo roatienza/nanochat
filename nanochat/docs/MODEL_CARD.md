@@ -1,7 +1,7 @@
-# nanochat-d28b-rl100 — Model Card
+# utak — Model Card
 
-**Model ID (served):** `nanochat-d28b-rl100`
-**Latest checkpoint:** `nanochat-d28b-rl100-128k-v6j` (`chatsft_checkpoints/d28b-128k-sft-v6j`, step 240)
+**Model ID (served):** `utak`
+**Latest checkpoint:** `utak-128k` (`chatsft_checkpoints/utak-sft-c`, step 240)
 **Parameters:** 2,018,511,234 (2.02 B) — 58.7 M embedding, 1,959.8 M non-embedding
 **Architecture:** 28-layer decoder, 14 heads, 14 KV heads (MHA, no GQA), `n_embd` 1792, head dim 128
 **Context:** 131,072 tokens (trained at 32,768, extended by Stage 7a)
@@ -84,11 +84,11 @@ The full pipeline is six stages. Each is a separate script under `scripts/`.
 
 ### 4.1 Stage 1 — Pre-training (base model)
 
-`scripts/base_train.py` → checkpoint `d28b-v2`.
+`scripts/base_train.py` → checkpoint `utak-base`.
 
 | Setting | Value |
 |---|---|
-| Steps | 40,000 |
+| Steps | **277,760** (derived from the data:param ratio, not pinned) |
 | Context | 2,048 |
 | Device batch / total batch | 4 / 32,768 |
 | Embedding LR / matrix LR | 0.3 / 0.02 |
@@ -99,7 +99,7 @@ The full pipeline is six stages. Each is a separate script under `scripts/`.
 
 ### 4.2 Stage 2 — Context extension (2 k → 128 k)
 
-`scripts/base_train_long.py` → `d28b-128k` (step 1750) → `d28b-128k-final` (step 250).
+`scripts/base_train_long.py` → `utak-128k` (step 1750) → `utak-128k-final` (step 250).
 
 | Setting | Value |
 |---|---|
@@ -125,10 +125,10 @@ Summary of the supervised stages:
 
 | Stage | Script | Output |
 |---|---|---|
-| SFT (long) | `scripts/chat_sft_long.py` | `d28b-128k-sft-*` |
-| RL (math) | `scripts/chat_rl.py` | `d28b-rl100` (step 177) |
+| SFT (long) | `scripts/chat_sft_long.py` | `utak-128k-sft-*` |
+| RL (math) | `scripts/chat_rl.py` | `utak-rl` (step 177) |
 | Agentic RL | `scripts/chat_rl_agentic.py` | stage 6 checkpoints |
-| Stage-7b SFT touch-ups | `scripts/chat_sft_long.py` | `d28b-128k-sft-v6j` ← **current** |
+| Stage-7b SFT touch-ups | `scripts/chat_sft_long.py` | `utak-sft-c` ← **current** |
 
 **RL algorithm.** `chat_rl.py` implements what the upstream source calls "GRPO in
 quotes", which is really REINFORCE with four deliberate simplifications:
@@ -144,7 +144,7 @@ rollout set cannot be memorized. This was the fix for Stage 5's failure mode, wh
 train reward saturated at 1.0, advantage went to zero, and gradients died at step ~40.
 
 **The current checkpoint (v6j)** is a Stage-7b SFT touch-up: 240 iterations from
-`d28b-128k-sft-v6a@240`, total batch 262,144 tokens, max sequence length 32,768.
+`utak-sft-b@240`, total batch 262,144 tokens, max sequence length 32,768.
 
 ## 5. Datasets
 
@@ -209,7 +209,7 @@ client (baby-onit, OpenAI-compatible)
 guard_proxy.py            ← clamps max_tokens, aborts degeneration, scrubs history
    │
    ▼  :8010
-vLLM  (nanochat-d28b-rl100-128k-v6j, GPU 0, bf16)
+vLLM  (utak-128k, GPU 0, bf16)
 ```
 
 The vLLM server owns **port 8010**; the **guard proxy owns port 8000**, which is the
@@ -228,7 +228,7 @@ that a client cannot override, so the cap has to live in front of it.
 --max-num-seqs 8
 --enable-prefix-caching
 --no-enable-chunked-prefill
---served-model-name nanochat-d28b-rl100
+--served-model-name utak
 --enable-auto-tool-choice
 --tool-call-parser nanochat
 --tool-parser-plugin .../nanochat_tool_parser.py
@@ -427,7 +427,7 @@ cd /data/rowel/nanochat && ./run_v6j.sh
 
 # 2. Pack to a vLLM-ready directory — pack/serve scripts live in vllm_d28b
 cd /data/rowel/nanochat_store/v2/vllm_d28b && ./pack_v6j.sh
-#    -> nanochat-d28b-rl100-128k-v6j/
+#    -> utak-128k/
 
 # 3. Gate before deploying (serve on 8016)
 cd /data/rowel/nanochat_store/v2/vllm_d28b && ./serve_v6j.sh

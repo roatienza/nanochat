@@ -1,4 +1,4 @@
-"""nanochat tool-call parser for vLLM (d28b-rl100).
+"""utak tool-call parser for vLLM.
 
 The model emits tool calls in its Stage-4 SFT format, inside python tags:
 

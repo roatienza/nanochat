@@ -38,7 +38,7 @@ async def main():
         cfg = {
             "data_path": str(tmp),
             "serving": {"provider": "vllm", "host": HOST,
-                        "model": "nanochat-d28b-rl100", "think": True,
+                        "model": os.environ.get("UTAK_MODEL_NAME", "utak"), "think": True,
                         "max_tokens": 32768, "max_chat_iterations": -1,
                         "max_context_tokens": 262144,
                         "history_budget_tokens": 8000,

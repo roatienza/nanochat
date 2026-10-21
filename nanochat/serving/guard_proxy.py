@@ -624,7 +624,7 @@ async def chat_completions(request: Request):
     include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
     body["stream"] = True  # always stream upstream: abort power for every shape
     body.pop("stream_options", None)  # reassemble usage ourselves
-    model_name = body.get("model", "nanochat-d28b-rl100")
+    model_name = body.get("model", os.environ.get("UTAK_MODEL_NAME", "utak"))
     # Scrub degenerate assistant turns from the REPLAYED HISTORY. A poisoned
     # history is an in-context attractor: the model copies the shape of the
     # previous (degenerate) answer. Dropping the whole turn fixes it; trimming

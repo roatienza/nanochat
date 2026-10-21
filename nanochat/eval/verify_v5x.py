@@ -41,7 +41,7 @@ sys.path.insert(0, BABY_ONIT_DIR)
 import baby_onit as bo
 
 cfg = {"data_path": DATA_DIR, "serving": {"host": URL.rsplit('/v1', 1)[0],
-       "model": "nanochat-d28b-rl100", "history_budget_tokens": 8000,
+       "model": os.environ.get("UTAK_MODEL_NAME", "utak"), "history_budget_tokens": 8000,
        "max_context_tokens": 262144, "temperature": 0.6, "top_p": 0.95,
        "max_tokens": 32768, "max_chat_iterations": -1, "think": True}}
 SYSMSG = bo.build_system_prompt(cfg)
@@ -64,7 +64,7 @@ def log(msg):
 
 
 def chat(messages, tools=None, max_tokens=150, temperature=0.6, seed=0):
-    body = {"model": "nanochat-d28b-rl100", "temperature": temperature, "top_p": 0.95,
+    body = {"model": os.environ.get("UTAK_MODEL_NAME", "utak"), "temperature": temperature, "top_p": 0.95,
             "max_tokens": max_tokens, "messages": messages, "seed": seed,
             "stream": True, "stream_options": {"include_usage": True}}
     if tools:

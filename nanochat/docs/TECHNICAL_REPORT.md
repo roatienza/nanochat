@@ -1,7 +1,7 @@
-# nanochat-d28b-rl100 — Technical Report
+# utak — Technical Report
 
-**Checkpoint:** `nanochat-d28b-rl100-128k-v6j` (`chatsft_checkpoints/d28b-128k-sft-v6j`, step 240)
-**Served as:** `nanochat-d28b-rl100` on `http://202.92.132.48:8000/v1`
+**Checkpoint:** `utak-128k` (`chatsft_checkpoints/utak-sft-c`, step 240)
+**Served as:** `utak` on `http://202.92.132.48:8000/v1`
 **Final val bpb:** 0.393419 · **Params:** 2,018,511,234 (2.02 B) · **Context:** 131,072
 
 This document is the engineering companion to [`../MODEL_CARD.md`](MODEL_CARD.md). The
@@ -259,11 +259,11 @@ Two places depend on it:
 
 ### 3.1 Stage 1 — Pre-training
 
-`scripts/base_train.py` → `d28b-v2`.
+`scripts/base_train.py` → `utak-base`.
 
 | Setting | Value |
 |---|---|
-| Steps | 40,000 |
+| Steps | **277,760** (derived from the data:param ratio, not pinned) |
 | Context | 2,048 |
 | Device batch / total batch | 4 / 32,768 |
 | Embedding LR | 0.3 |
@@ -277,7 +277,7 @@ Two places depend on it:
 
 ### 3.2 Stage 2 — Context extension (2 k → 128 k)
 
-`scripts/base_train_long.py` → `d28b-128k` (step 1750) → `d28b-128k-final` (step 250).
+`scripts/base_train_long.py` → `utak-128k` (step 1750) → `utak-128k-final` (step 250).
 
 | Setting | Value |
 |---|---|
@@ -300,9 +300,24 @@ comparable**; the same caveat recurs at every SFT stage below.
 Stage-7b touch-ups. It differs from `chat_sft.py` in rendering with the full tokenizer
 conversation format and packing at the full `max_seq_len`.
 
-### 3.4 Stage 4 — Math RL
+### 3.4 Stages 4-6 — Math RL, then agentic RL, then the curriculum run
 
-`scripts/chat_rl.py` → `d28b-rl100` (step 177, checkpoint 100 also retained).
+**This is three runs, not one, and the last one is the checkpoint the
+long-context stage builds on.** The earlier version of this report
+compressed them into a single "Stage 4"; the checkpoint metadata and the
+execution log show the chain is:
+
+| Stage | Script | Input | Output | Note |
+|---|---|---|---|---|
+| 4 | `scripts/chat_sft.py` | `utak-base` @ 277,760 | `utak-warmup` @ 509 | GSM8K x10 + tool-calling x4, fresh optimizer. Exists to give REINFORCE a nonzero reward signal: without it the first RL run dies at step 7 with reward 0.0. |
+| 5 | `scripts/chat_rl.py` | `utak-warmup` @ 509 | `chatrl/utak-rl-warmup` @ 100 | Math RL on GSM8K. Test Pass@1 0.1350 -> 0.1775 (step 40) -> 0.1575 (step 120, stopped at the flat point). |
+| 6 | `scripts/chat_rl_agentic.py` | `utak-rl-warmup` @ 100 | `chatrl/utak-rl-pilot` | Agentic RL on sandbox-verified environments. Pass@1 0.0667 -> 0.2667 in 20 steps. |
+| 6b | `scripts/chat_rl_curriculum.py` | `utak-rl-pilot` @ 177 | `chatrl/utak-rl` @ 177 | Weighted block pool + train-only exemplar scaffold. Pass@1 0.600 -> 0.667, 10/15 blocks mastered. |
+
+**This is the checkpoint the 128k context extension is built from** --
+`base_checkpoints/utak-128k/meta_001750.json` records
+`source_phase: "rl"`, `model_step: 177`. The RL chain runs BEFORE the
+context extension, not after.
 
 The upstream header calls this "GRPO in quotes", which is accurate: it is REINFORCE
 with four deliberate simplifications.
@@ -340,15 +355,15 @@ instances of the same families.
 
 ### 3.6 Stage 7b — The touch-up ladder (current work)
 
-Every v5x–v6j checkpoint is a 240-iteration SFT touch-up from `d28b-128k-sft-v6a@240`.
+Every v5x–v6j checkpoint is a 240-iteration SFT touch-up from `utak-sft-b@240`.
 The recipe is fixed; only the data and specific fixes change between runs.
 
 **v6j run configuration** (`run_v6j.sh`):
 
 ```
 --run stage7b-v6j-literalnl
---source-phase sft --model-tag d28b-128k-sft-v6a --model-step 240
---output-tag d28b-128k-sft-v6j
+--source-phase sft --model-tag utak-sft-b --model-step 240
+--output-tag utak-sft-c
 --max-seq-len 32768 --short-window 512
 --device-batch-size 1 --total-batch-size 262144
 --num-iterations 240
@@ -419,7 +434,7 @@ Today's date is 2026-10-19, and
 I'm\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n
 \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n
 ...
- model nanochat-d28b-rl100  provider openai-compat  dir /home/rowel/baby-sandbox
+ model utak  provider openai-compat  dir /home/rowel/baby-sandbox
  7,246 tok (3,150 in / 4,096 out)  124.1s
 ```
 
@@ -532,7 +547,7 @@ client (baby-onit, OpenAI-compatible)
 :8000  guard_proxy.py          ← public endpoint
    │  clamp max_tokens, scrub history, always stream, abort degeneration
    ▼
-:8010  vLLM                    ← nanochat-d28b-rl100-128k-v6j, GPU 0, bf16
+:8010  vLLM                    ← utak-128k, GPU 0, bf16
 ```
 
 **Why the inversion.** vLLM has no server-side completion cap that a client cannot
@@ -551,7 +566,7 @@ to the proxy.
 | `--no-enable-chunked-prefill` | on | Measured necessary for correct long-context behaviour with the `SSSL` window pattern |
 | `--gpu-memory-utilization` | 0.94 | — |
 | `--enforce-eager` | on | No CUDA graph capture |
-| `--served-model-name` | `nanochat-d28b-rl100` | The name clients ask for |
+| `--served-model-name` | `utak` | The name clients ask for |
 | `--enable-auto-tool-choice` | on | Native tool calling |
 | `--tool-call-parser` | `nanochat` | Custom parser |
 | `--tool-parser-plugin` | `nanochat_tool_parser.py` | Plugin registration |
@@ -639,7 +654,7 @@ shape are byte-identical to what the harness sends:
 
 ```python
 import baby_onit as bo
-cfg = {"serving": {"host": ..., "model": "nanochat-d28b-rl100",
+cfg = {"serving": {"host": ..., "model": "utak",
        "history_budget_tokens": 8000, "max_context_tokens": 262144,
        "temperature": 0.6, "top_p": 0.95, "max_tokens": 32768,
        "max_chat_iterations": -1, "think": True}}
@@ -766,7 +781,7 @@ cd /data/rowel/nanochat && ./run_v6j.sh
 
 # 2. Pack to a vLLM-ready directory — pack/serve scripts live in vllm_d28b
 cd /data/rowel/nanochat_store/v2/vllm_d28b && ./pack_v6j.sh
-#    -> nanochat-d28b-rl100-128k-v6j/
+#    -> utak-128k/
 
 # 3. Gate before deploying (serve on 8016)
 cd /data/rowel/nanochat_store/v2/vllm_d28b && ./serve_v6j.sh
