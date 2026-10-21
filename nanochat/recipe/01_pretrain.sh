@@ -65,8 +65,16 @@ run_pretrain() {
 
 if [ "$NGPUS" -gt 1 ]; then
   # Multi-GPU: the dataloader shards the corpus; DDP averages the gradients.
+  #
+  # The "--" is REQUIRED. Without it, torchrun tries to parse the trainer's
+  # own flags as its own, and "--run" is ambiguous against torchrun's
+  # "--run-path"/"--run_path": the run dies with
+  #   run.py: error: ambiguous option: --run could match --run-path, --run_path
+  # This was a latent bug in this script -- the multi-GPU branch had never
+  # actually executed. The 4-GPU run that produced the served model was
+  # launched by hand, with the separator, from the shell.
   run_pretrain "$PY" -m torch.distributed.run --standalone \
-               --nproc_per_node="$NGPUS" -m scripts.base_train
+               --nproc_per_node="$NGPUS" -m scripts.base_train --
 else
   run_pretrain "$PY" -m scripts.base_train
 fi

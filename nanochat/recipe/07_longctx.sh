@@ -23,6 +23,9 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 log "=== Stage 7: long-context extension -> $TAG_LONGC -> $TAG_LONGC_FINAL ==="
 STAGE_GPU="${GPU_LONGC}"
+# The long-context trainers do not reduce gradients across ranks, so
+# they MUST run on a single card. See recipe/config.sh.
+require_single_gpu "07_longctx"
 log "    source: rl/$TAG_RL @ step 177  ->  131072 ctx"
 
 # ---- 7a: the main long-context pass -------------------------------------

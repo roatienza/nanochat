@@ -21,24 +21,55 @@ REPO_TAG="${REPO_TAG:-v6j}"                           # the touch-up revision
 # Paths
 # ---------------------------------------------------------------------------
 NANOCHAT_ROOT="${NANOCHAT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# The repo lives at <parent>/reasoner-model, and the training venv lives at
+# <parent>/nanochat/.venv. Derive that path instead of hardcoding it, so the
+# recipe still works if the tree is moved.
+NANOCHAT_PARENT_DIR="${NANOCHAT_PARENT_DIR:-$(cd "$NANOCHAT_ROOT/.." && pwd)}"
+NANOCHAT_GRANDPARENT_DIR="${NANOCHAT_GRANDPARENT_DIR:-$(cd "$NANOCHAT_PARENT_DIR/.." && pwd)}"
+# Candidate venv locations, most specific first. The real one on this node is
+# /data/rowel/nanochat/.venv, i.e. a SIBLING of the repo directory
+# (reasoner-model/nanochat), not of the repo itself.
+NANOCHAT_SIBLING_VENV="${NANOCHAT_SIBLING_VENV:-$NANOCHAT_GRANDPARENT_DIR/nanochat/.venv}"
+NANOCHAT_PARENT_VENV="${NANOCHAT_PARENT_VENV:-$NANOCHAT_GRANDPARENT_DIR/.venv}"
+NANOCHAT_REPO_VENV="${NANOCHAT_REPO_VENV:-$NANOCHAT_PARENT_DIR/nanochat/.venv}"
 NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-/data/rowel/nanochat_store/v2}"
 VLLM_DIR="${VLLM_DIR:-$NANOCHAT_BASE_DIR/vllm_d28b}"
 VLLM_BIN="${VLLM_BIN:-$VLLM_DIR/venv-vllm/bin/vllm}"
 VLLM_PY="${VLLM_PY:-$VLLM_DIR/venv-vllm/bin/python}"
-PY="${PY:-$NANOCHAT_ROOT/.venv/bin/python}"
-# The venv is not tracked (it is 6 GB of wheels). If it is missing, fall back
-# to $PYTHON, but FAIL LOUDLY if that interpreter has no torch -- a silent
-# fallthrough to a system python turns a 10-day run into an ImportError
-# 40 minutes in.
-if [ ! -x "$PY" ]; then
-  PY="${PYTHON:-python3}"
-  if ! "$PY" -c "import torch" >/dev/null 2>&1; then
-    printf '[FATAL] no usable python found.\n' >&2
-    printf '  Tried: %s/.venv/bin/python (missing) and %s (no torch).\n' "$NANOCHAT_ROOT" "$PY" >&2
-    printf '  Fix:  cd %s && uv venv && uv pip install -r pyproject.toml\n' "$NANOCHAT_ROOT" >&2
-    printf '  Or:   export PY=/path/to/python-with-torch\n' >&2
-    exit 1
-  fi
+# The training interpreter. It must have torch.
+#
+# The venv is not tracked (it is 6 GB of wheels), so it usually lives
+# OUTSIDE the repo. Search for it in this order:
+#
+#   1. $PY                       (explicit override -- always wins)
+#   2. $NANOCHAT_ROOT/.venv      (an in-repo venv, if someone made one)
+#   3. $NANOCHAT_SIBLING_VENV    (the venv beside the repo; this is where
+#                                  it actually is on this node)
+#   4. $PYTHON / python3
+#
+# FAIL LOUDLY if the chosen interpreter has no torch. A silent fallthrough
+# to a system python turns a 10-day run into an ImportError 40 minutes in.
+PY="${PY:-}"
+if [ -z "$PY" ]; then
+  for cand in \
+      "$NANOCHAT_ROOT/.venv/bin/python" \
+      "$NANOCHAT_REPO_VENV/bin/python" \
+      "$NANOCHAT_SIBLING_VENV/bin/python" \
+      "$NANOCHAT_PARENT_VENV/bin/python"
+  do
+    if [ -x "$cand" ]; then PY="$cand"; break; fi
+  done
+fi
+if [ -z "$PY" ]; then PY="${PYTHON:-python3}"; fi
+if ! "$PY" -c "import torch" >/dev/null 2>&1; then
+  printf ' no usable python found (no torch).\n' >&2
+  printf '  Tried: %s/.venv, %s, %s, %s, and %s.\n' \
+    "$NANOCHAT_ROOT" "${NANOCHAT_REPO_VENV:-<unset>}" \
+    "${NANOCHAT_SIBLING_VENV:-<unset>}" \
+    "${NANOCHAT_PARENT_VENV:-<unset>}" "$PY" >&2
+  printf '  Fix:  cd %s && uv venv && uv pip install -r pyproject.toml\n' "$NANOCHAT_ROOT" >&2
+  printf '  Or:   export PY=/path/to/python-with-torch\n' >&2
+  exit 1
 fi
 
 # Where the packed model lands and where the guard/vLLM read it from.
@@ -71,20 +102,92 @@ MODEL_DIR="${MODEL_DIR:-$VLLM_DIR/$MODEL_DIR_NAME}"
 # or ~270 h (~11.3 days) with a 15% restart/IO contingency.
 # See docs/ETA_1GPU.md for the derivation.
 # ---------------------------------------------------------------------------
+# PROFILE selects the GPU layout. Three are supported:
+#
+#   PROFILE=multi   4 GPUs for the pretrain, 1 for the rest  (the default;
+#                    the layout the original run used)
+#   PROFILE=2gpu    2 GPUs for every GPU stage
+#   PROFILE=1gpu    1 GPU for every GPU stage
+#
+# Set PROFILE=2gpu to run the whole recipe on two A100-40GB cards. It is a
+# supported path, not a degraded one:
+#
+#   * MEASURED on this node, same d28 workload, 2k ctx, tbs 32,768:
+#       1 GPU  18,051 tok/s  MFU 42.62
+#       2 GPUs 34,880 tok/s  MFU 41.17
+#       4 GPUs 66,585 tok/s  MFU 39.30
+#     One GPU is ~97% as efficient PER TOKEN as four. 4 GPUs buy 3.69x
+#     throughput, so one GPU costs ~3.7x the wall clock, not 4x.
+#   * d28 fits one card: measured peak 34.86 GiB at device-batch 4
+#     (nanochat/mem_probe.py), against 40 GiB of card.
+#   * The optimizer shards by world_size. Going 4 -> 1 is handled by
+#     chat_sft.py:341 (rebuild full-size moments from the 4 saved shards,
+#     then re-shard to 1). Going 1 -> 4 is the same path in reverse.
+#   * LR does NOT depend on world size. base_train.py scales LR by
+#     sqrt(B/B_ref) on TOTAL batch size, and total_batch_size is a user
+#     argument that is unchanged by the GPU count. The batch is held
+#     constant across profiles, so a 1-GPU run is not a different recipe.
+#
+# 1-GPU wall clock for the full 16-stage recipe: ~249 h (~10.4 days),
+# or ~270 h (~11.3 days) with a 15% restart/IO contingency.
+# See docs/ETA_1GPU.md for the derivation.
+#
+# GRADIENT SYNC. nanochat has no DistributedDataParallel wrapper: the
+# gradient reduction lives INSIDE MuonAdamW (nanochat/optim.py), which
+# reduce-scatters the large AdamW moments and all-reduces the small ones.
+# So every stage that uses model.setup_optimizer() is DDP-correct.
+#
+# The two long-context scripts are the exception: base_train_long.py and
+# chat_sft_long.py use a plain torch.optim.AdamW (MuonAdamW leaks 2-3
+# GB/step at 128k ctx) and they never reduce the gradients themselves.
+# Running them on more than one GPU therefore SILENTLY DIVERGES the ranks:
+# each rank optimizes its own data shard alone, and rank 0's checkpoint --
+# the one that is kept -- is the product of a single shard.
+# This was measured, not assumed: a two-rank replica of that exact
+# pattern (different data per rank, plain AdamW, no all-reduce) ends with
+# rank-0 weights different from the cross-rank mean.
+#
+# => The 128k stages (7 and 8) and the touch-ups (9) are pinned to ONE GPU
+#    in every profile. Stage 9 runs chat_sft_long.py too, so it inherits
+#    the same restriction. See recipe/07_longctx.sh, 08_sft_long.sh and
+#    09_touchup.sh, each of which calls require_single_gpu.
+#
+#    The original stage-7a/7b runs were also done on 1-2 GPUs, and the
+#    shipped checkpoints (base_checkpoints/d28b-128k*) carry no optimizer
+#    shards, which is the signature of a single-rank save.
+#
+# 2-GPU wall clock: the pretrain is 3.69x/2 = 1.85x the 4-GPU time, and
+# every other stage is unchanged (the RL and 128k stages are not
+# compute-bound on the GPU count). See docs/ETA_2GPU.md.
 PROFILE="${PROFILE:-multi}"
-if [ "$PROFILE" = "1gpu" ]; then
-  # One card for everything except the server. Pick a card that is FREE:
-  # a 40 GiB card already holding a vLLM server cannot also hold d28.
-  GPU_PRETRAIN="${GPU_PRETRAIN:-6}"
-  GPU_SFT="${GPU_SFT:-6}"
-  GPU_LONGC="${GPU_LONGC:-6}"
-  GPU_TOUCHUP="${GPU_TOUCHUP:-6}"
-else
-  GPU_PRETRAIN="${GPU_PRETRAIN:-4,5,6,7}"
-  GPU_SFT="${GPU_SFT:-4}"
-  GPU_LONGC="${GPU_LONGC:-5}"
-  GPU_TOUCHUP="${GPU_TOUCHUP:-7}"
-fi
+case "$PROFILE" in
+  1gpu)
+    # One card for everything except the server. Pick a card that is FREE:
+    # a 40 GiB card already holding a vLLM server cannot also hold d28.
+    GPU_PRETRAIN="${GPU_PRETRAIN:-6}"
+    GPU_SFT="${GPU_SFT:-6}"
+    GPU_LONGC="${GPU_LONGC:-6}"
+    GPU_TOUCHUP="${GPU_TOUCHUP:-6}"
+    ;;
+  2gpu)
+    # Two cards. The 128k stages (7, 8) and the touch-ups (9) stay on ONE
+    # card: they use base_train_long.py / chat_sft_long.py, which use a
+    # plain AdamW and do not reduce gradients across ranks.
+    GPU_PRETRAIN="${GPU_PRETRAIN:-6,7}"
+    GPU_SFT="${GPU_SFT:-6,7}"
+    GPU_LONGC="${GPU_LONGC:-6}"
+    GPU_TOUCHUP="${GPU_TOUCHUP:-6}"
+    ;;
+  multi)
+    GPU_PRETRAIN="${GPU_PRETRAIN:-4,5,6,7}"
+    GPU_SFT="${GPU_SFT:-4}"
+    GPU_LONGC="${GPU_LONGC:-5}"
+    GPU_TOUCHUP="${GPU_TOUCHUP:-7}"
+    ;;
+  *)
+    die "unknown PROFILE '$PROFILE' (want: multi, 2gpu, 1gpu)"
+    ;;
+esac
 GPU_SERVE="${GPU_SERVE:-0}"
 
 # ---------------------------------------------------------------------------
@@ -245,14 +348,64 @@ die() { printf '[utak][%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 # lands on GPU 0 -- which is where the vLLM server lives (37.4 GiB of
 # 40 GiB) and where a training run OOMs. A single-GPU profile is
 # therefore a first-class path, not an accident.
+# Refuse to run a stage on more than one GPU when that would be WRONG.
+#
+# The two long-context trainers (base_train_long.py, chat_sft_long.py) use a
+# plain torch.optim.AdamW and never reduce the gradients across ranks, so
+# on >1 GPU each rank optimises its own data shard alone and the ranks
+# diverge silently. Rank 0's checkpoint -- the one that is kept -- is then
+# the product of a single shard, not of the full batch.
+#
+# The trainers that DO use model.setup_optimizer() are fine: the gradient
+# reduction lives inside MuonAdamW (nanochat/optim.py).
+require_single_gpu() {
+  local n
+  n="$(stage_gpu_count)"
+  if [ "$n" -gt 1 ]; then
+    die "stage '$1' must run on ONE GPU, but STAGE_GPU=${STAGE_GPU:-unset} gives $n. \
+The long-context trainers do not reduce gradients across ranks (plain AdamW, \
+no DistributedDataParallel), so a multi-GPU run would silently diverge. \
+Set GPU_LONGC to a single card."
+  fi
+}
+
+# How many GPUs does this stage get? STAGE_GPU is a comma-separated list.
+stage_gpu_count() {
+  local g="${STAGE_GPU:-0}"
+  [ -z "$g" ] && g=0
+  awk -F, '{print NF}' <<< "$g"
+}
+
+# Run a module from the nanochat checkout with the base dir exported.
+#
+# If the stage has MORE THAN ONE GPU, the module is launched under
+# torchrun with --nproc_per_node=<count>, which is what gives the stage a
+# DDP process group. Every trainer in this repo is DDP-aware:
+# compute_init() reads RANK/WORLD_SIZE and initialises NCCL, the
+# dataloader shards the corpus by rank, and the gradient reduction
+# happens inside MuonAdamW.
+#
+# The "--" separator is REQUIRED: torchrun treats everything after it as
+# the script's own arguments rather than its own.
 run_mod() {
   local logfile="$1"; shift
-  log "RUN: $*  (log: $logfile, gpu: ${STAGE_GPU:-unset})"
-  ( cd "$NANOCHAT_ROOT" \
-    && NANOCHAT_BASE_DIR="$NANOCHAT_BASE_DIR" \
-       CUDA_VISIBLE_DEVICES="${STAGE_GPU:-0}" \
-       PYTHONPATH="$NANOCHAT_ROOT:${PYTHONPATH:-}" \
-       "$PY" -m "$@" ) > "$logfile" 2>&1
+  local ngpus
+  ngpus="$(stage_gpu_count)"
+  log "RUN: $*  (log: $logfile, gpu: ${STAGE_GPU:-unset}, procs: $ngpus)"
+  if [ "$ngpus" -gt 1 ]; then
+    ( cd "$NANOCHAT_ROOT" \
+      && NANOCHAT_BASE_DIR="$NANOCHAT_BASE_DIR" \
+         CUDA_VISIBLE_DEVICES="${STAGE_GPU:-0}" \
+         PYTHONPATH="$NANOCHAT_ROOT:${PYTHONPATH:-}" \
+         "$PY" -m torch.distributed.run --standalone \
+           --nproc_per_node="$ngpus" -m "$1" -- "${@:2}" ) > "$logfile" 2>&1
+  else
+    ( cd "$NANOCHAT_ROOT" \
+      && NANOCHAT_BASE_DIR="$NANOCHAT_BASE_DIR" \
+         CUDA_VISIBLE_DEVICES="${STAGE_GPU:-0}" \
+         PYTHONPATH="$NANOCHAT_ROOT:${PYTHONPATH:-}" \
+         "$PY" -m "$@" ) > "$logfile" 2>&1
+  fi
   local rc=$?
   [ $rc -eq 0 ] || { log "FAILED (exit $rc): $*"; tail -30 "$logfile"; return $rc; }
   log "OK: $*"
@@ -260,6 +413,7 @@ run_mod() {
 }
 
 export MODEL_NAME MODEL_DIR_NAME REPO_TAG NANOCHAT_ROOT NANOCHAT_BASE_DIR \
+       NANOCHAT_SIBLING_VENV NANOCHAT_PARENT_VENV PROFILE PY \
        VLLM_DIR VLLM_BIN VLLM_PY MODEL_DIR \
        GPU_PRETRAIN GPU_SFT GPU_LONGC GPU_TOUCHUP GPU_SERVE \
        PUBLIC_PORT UPSTREAM_PORT \

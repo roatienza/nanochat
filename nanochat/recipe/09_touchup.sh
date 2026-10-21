@@ -37,6 +37,11 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 log "=== Stage 9: touch-up ladder -> $TAG_TOUCH_B ==="
 STAGE_GPU="${GPU_TOUCHUP}"
+# The touch-ups use scripts/chat_sft_long.py, which uses a plain
+# torch.optim.AdamW and does NOT reduce gradients across ranks. On
+# more than one GPU the ranks would silently diverge. One card only.
+# See recipe/config.sh.
+require_single_gpu "09_touchup"
 
 # ---------------------------------------------------------------------------
 # 9a: tool follow-up. Teaches the model to continue after a tool result.

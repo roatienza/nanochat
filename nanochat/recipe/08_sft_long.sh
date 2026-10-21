@@ -34,6 +34,9 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 log "=== Stage 8: long-context SFT -> $TAG_SFT ==="
 STAGE_GPU="${GPU_LONGC}"
+# The long-context trainers do not reduce gradients across ranks, so
+# they MUST run on a single card. See recipe/config.sh.
+require_single_gpu "08_sft_long"
 log "    source: base/$TAG_LONGC_FINAL @ 250"
 
 # --- the first 100 iterations --------------------------------------------
