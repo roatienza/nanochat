@@ -8,15 +8,25 @@ This is the companion to [`ETA_1GPU.md`](ETA_1GPU.md). That document gives the
 
 ## Headline
 
+**d28 does NOT fit on two 40 GiB cards.** Measured on this node with the
+real trainer: a 2-rank pretrain OOMs at 39.4 GiB on a completely EMPTY
+card. The binding constraint is the optimizer state, not the activations,
+and it does not shrink with the device batch (see
+[Why two GPUs does not work](#why-two-gpus-does-not-work)).
+
 | profile | wall clock | days | basis |
 |---|---|---|---|
-| **2 GPUs** | **141.9 h** | **5.9** | 3 of 9 training stages measured at 2 GPUs; the rest scaled from the measured 1↔4 GPU pair |
-| 2 GPUs + 15 % contingency | 163 h | 6.8 | restarts, checkpoint I/O, eval drift |
-| 1 GPU | 249 h | 10.4 | see ETA_1GPU.md |
+| **1 GPU** (the real answer) | **249 h** | **10.4** | see ETA_1GPU.md; 3 of 9 stages measured on one GPU, the rest scaled from the measured 1↔4 GPU pair |
+| 1 GPU + 15 % contingency | 270 h | 11.3 | restarts, checkpoint I/O, eval drift |
+| 2 GPUs | **does not fit** | — | measured OOM at every device batch |
 | 4 GPUs (how the served model was built) | ~75 h | 3.1 | pretrain 34.2 h + the rest |
 
-**If training starts on 2026-10-21 on two free GPUs, `utak` is served at about
-2026-10-27 11:00 PDT**, or 2026-10-28 midday with contingency.
+**If training starts on 2026-10-21 on one free GPU, `utak` is served at about
+2026-11-01 12:00 PDT**, or 2026-11-02 midday with contingency.
+
+The rest of this document keeps the 2-GPU analysis, because the question
+"can we train this on 2 A100-40GBs?" deserves a measured answer rather
+than an assumed one.
 
 ## The correction: stages 7 and 8 CANNOT use two GPUs
 
@@ -70,26 +80,90 @@ but were followed by single-GPU re-runs.
 
 | st | stage | 1 GPU | 2 GPUs | basis |
 |---|---|---|---|---|
-| 1 | pretrain, d28, 2k ctx, 277,760 steps | 145.3 h | **72.7 h** | 4-GPU log × 1.85 (34.25 h train + 5.1 h eval) |
-| 2 | tool-calling SFT, ~11,891 steps | 7.2 h | **3.6 h** | 4-GPU log × 1.85 |
-| 3 | GSM8K warmup SFT, 509 steps | 1.3 h | **0.7 h** | 1-GPU measurement × 1.85 |
-| 4 | math RL on GSM8K, 120 steps | 13.5 h | **7.0 h** | 1-GPU measurement × 1.85 |
-| 5 | agentic RL pilot, 178 steps | 31.5 h | **16.0 h** | 1-GPU measurement × 1.85 |
-| 6 | curriculum RL, 178 steps | 24.0 h | **12.5 h** | 1-GPU measurement × 1.85 |
-| 7 | context extension 2k → 128k | 12.9 h | **12.9 h** | **1 GPU ONLY** — see above |
-| 8 | 128k SFT, 800 steps | 5.1 h | **5.1 h** | **1 GPU ONLY** — see above |
-| 9 | touch-up ladder, 840 steps, 6 sub-stages | 6.8 h | **6.8 h** | **1 GPU ONLY** — uses `chat_sft_long.py` |
-| 10 | pack → vLLM dir | 0.3 h | 0.3 h | measured |
-| 11 | serve (vLLM + guard) | 0.2 h | 0.2 h | measured |
-| 12 | gates | 0.5 h | 0.5 h | measured |
-| 13 | e2e acceptance | 0.3 h | 0.3 h | measured |
-| 14 | regression tests | 0.2 h | 0.2 h | measured |
-| 15 | scrub test | 0.2 h | 0.2 h | measured |
-| | **TOTAL** | **249.3 h** | **141.9 h** | |
-| | **in days** | **10.4** | **5.9** | |
-| | **+ 15 % contingency** | **11.3 d** | **6.6 d** | |
+| 1 | pretrain, d28, 2k ctx, 277,760 steps | 145.3 h | **OOM** | 4-GPU log × 3.7; the 2-rank run does not fit |
+| 2 | tool-calling SFT, ~11,891 steps | 7.2 h | — | 4-GPU log × 3.7 |
+| 3 | GSM8K warmup SFT, 509 steps | 1.3 h | — | **MEASURED 1 GPU** (`stage5a_warmup.log`) |
+| 4 | math RL on GSM8K, 120 steps | 13.5 h | — | **MEASURED 1 GPU** (log span 17:47 → 07:18) |
+| 5 | agentic RL pilot, 178 steps | 31.5 h | — | **MEASURED 1 GPU** (log span 11:31 → 19:00) |
+| 6 | curriculum RL, 178 steps | 24.0 h | — | **MEASURED 1 GPU** (log span 21:39 → 21:41) |
+| 7 | context extension 2k → 128k | 12.9 h | — | **MEASURED 1 GPU**; also 1 GPU only by design (see the gradient-sync section) |
+| 8 | 128k SFT, 800 steps | 5.1 h | — | **MEASURED 1 GPU**; also 1 GPU only by design |
+| 9 | touch-up ladder, 840 steps, 6 sub-stages | 6.8 h | — | **MEASURED 1 GPU**; also 1 GPU only by design |
+| 10 | pack → vLLM dir | 0.3 h | — | measured |
+| 11 | serve (vLLM + guard) | 0.2 h | — | measured |
+| 12 | gates | 0.5 h | — | measured |
+| 13 | e2e acceptance | 0.3 h | — | measured |
+| 14 | regression tests | 0.2 h | — | measured |
+| 15 | scrub test | 0.2 h | — | measured |
+| | **TOTAL** | **249.3 h** | **—** | |
+| | **in days** | **10.4** | **—** | |
+| | **+ 15 % contingency** | **11.3 d** | **—** | |
 
-## Why two GPUs is 1.8× better, not 2×
+## Why two GPUs does not work
+
+This is the measured answer to "can we train this on 2 A100-40GBs?", and
+the answer is **no, not at d28**.
+
+The 2-rank pretrain OOMed at **39.40 GiB on a COMPLETELY EMPTY card**.
+Sweeping the device batch does not help:
+
+| config | result | detail |
+|---|---|---|
+| 1 GPU, device batch 4 | OK | 15,413 tok/s, 36.4 % MFU |
+| 1 GPU, device batch 2 | OK | 17,608 tok/s, 41.6 % MFU |
+| 1 GPU, device batch 1 | OK | 14,286 tok/s, 33.7 % MFU |
+| 2 GPUs, device batch 4 | **OOM** | 35.34 GiB |
+| 2 GPUs, device batch 2 | **OOM** | 34.28 GiB |
+| 2 GPUs, device batch 1 | **OOM** | 32.96 GiB |
+
+The instrumented breakdown — a real forward + backward + optimizer step,
+printing `torch.cuda.memory_allocated` / `reserved` / `max_memory_allocated`
+at each stage — shows why the device batch does not matter:
+
+| stage | alloc | reserved | peak |
+|---|---|---|---|
+| after model init (bf16 weights) | 5.88 | 7.66 | 7.63 |
+| after backward | 11.78 | 22.56 | 22.19 |
+| after opt.step (state allocated) | 19.52 | 32.67 | 31.24 |
+| **2nd step, after opt.step = PEAK** | 19.52 | **35.68** | **31.24** |
+
+The cost is the **optimizer state**, not the activations:
+
+| item | size |
+|---|---|
+| parameters | 2.019 B |
+| bf16 weights | 3.76 GiB |
+| bf16 gradients | 3.76 GiB |
+| fp32 exp_avg + exp_avg_sq | 15.04 GiB |
+| reduce-scatter + all-gather buffers | the rest |
+
+15 GiB of fp32 moments for 2.02 B parameters, plus the weights, the
+gradients and the collective buffers, is ~35.5 GiB on a single rank —
+before the activations, which are why the *reserved* figure is 35.68
+rather than 31.24. At world size 2 each rank additionally holds the
+stacked-gradient buffer that `MuonAdamW._reduce_muon` builds before it
+reduce-scatters (`nanochat/optim.py:308-316`), so the per-rank figure
+goes UP rather than down.
+
+**A smaller device batch cannot fix this**, because the device batch
+changes the activations and the activations are not the problem. What
+would fix it is a smaller model (d24 = 1.38 B, d22 = 1.12 B) or CPU /
+offloaded optimizer state.
+
+### What this means for the plan
+
+The original served model was built on **4 GPUs** (the log records
+`Distributed world size: 4`), so it was always a 4-card job. On this
+node, where the other tenant holds 7 of the 8 cards, the honest profile
+is **one GPU** — and one GPU at device batch 2 is the best throughput
+measured (41.6 % MFU).
+
+`recipe/config.sh` now carries `check_gpu_memory()`, which warns — with
+the exact shortfall — when a card has less than 37,600 MiB free, and
+says that a smaller device batch will not help. The pretrain stage calls
+it before it starts, so an OOM is never a mystery.
+
+## Why one GPU is 3.7× better than four
 
 The scaling anchor, measured on this node with the same d28 SFT workload:
 
