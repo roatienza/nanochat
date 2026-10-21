@@ -148,10 +148,31 @@ Every one of these was run on this node before the recipe was used.
 | 2-GPU SFT (`scripts.chat_sft`, MuonAdamW) | `Distributed world size: 2`, consumed the pretrain's 2 optimizer shards, wrote 2 new ones |
 | 2-GPU RL (`scripts.chat_rl`) | `Distributed world size: 2`, `examples per rank: 2`, 281 steps executed |
 | 2-GPU agentic RL (`scripts.chat_rl_agentic`) | `Distributed world size: 2`, `examples per rank: 2` |
+| 2-GPU curriculum RL (`scripts.chat_rl_curriculum`) | `Distributed world size: 2`, `examples per rank: 2` |
+| 1-GPU context extension (`scripts.base_train_long`) | `Distributed world size: 1`, `grad accum 1` |
+| 1-GPU 128k SFT (`scripts.chat_sft_long`) | `Distributed world size: 1`, `grad accum 1`, compile enabled |
 | MuonAdamW gradient sync on 2 ranks | `RANKS IN SYNC? True` |
 | plain-AdamW gradient sync on 2 ranks | `RANKS IN SYNC? False` (the bug above) |
 | `require_single_gpu` guard | aborts with exit 1 on a 2-GPU `GPU_LONGC`, passes on 1 |
-| offline test suite | 79 passed |
+| offline test suite | 81 passed |
+
+## One more bug found by running every trainer first
+
+Running all seven trainers before launching the real job found a
+`NameError` that would have killed the run hours in:
+
+    scripts/chat_sft_long.py:149
+
+    _group_forward = torch.compile(_group_forward, dynamic=False)
+
+placed ABOVE the `def _group_forward(...)` it refers to. The script died at
+import with `NameError: name '_group_forward' is not defined`. The block
+came in with the torch.compile work; the stage-7b/8/9 runs that produced
+the shipped checkpoints predate it, so it had never been exercised.
+
+Fixed in 57c097a, with `tests/test_compile_order.py` as the regression
+test (it parses both long-context scripts and asserts the compile
+assignment comes after the def).
 
 ## Caveats, stated plainly
 
