@@ -1,0 +1,52 @@
+{
+  "step": 100,
+  "val_bpb": 0.35523311164154336,
+  "model_config": {
+    "sequence_len": 131072,
+    "vocab_size": 32768,
+    "n_layer": 28,
+    "n_head": 14,
+    "n_kv_head": 14,
+    "n_embd": 1792,
+    "window_pattern": "SSSL",
+    "short_window": 512,
+    "rope_base": 100000
+  },
+  "user_config": {
+    "run": "stage7b-final-100",
+    "device_type": "",
+    "model_tag": "d28b-128k-sft",
+    "source_phase": "sft",
+    "model_step": 500,
+    "output_tag": "d28b-128k-sft-final",
+    "max_seq_len": 131072,
+    "short_window": 512,
+    "device_batch_size": 1,
+    "total_batch_size": 262144,
+    "num_iterations": 100,
+    "longctx_epochs": 2,
+    "toolcall_epochs": 1,
+    "toolace_epochs": 1,
+    "smoltalk_epochs": 1,
+    "embedding_lr": 0.072,
+    "unembedding_lr": 0.0019,
+    "matrix_lr": 0.0048,
+    "scalar_lr": 0.12,
+    "weight_decay": 0.028,
+    "warmup_ratio": 0.05,
+    "warmdown_ratio": 0.9,
+    "final_lr_frac": 0.0,
+    "eval_every": 100,
+    "eval_tokens": 262144,
+    "save_every": 100,
+    "ce_chunk": 4096
+  },
+  "device_batch_size": 1,
+  "max_seq_len": 131072,
+  "total_batch_size": 262144,
+  "loop_state": {
+    "min_val_bpb": 0.35523311164154336,
+    "smooth_train_loss": 0.7958701995943319,
+    "total_training_time": 2335.6712234020233
+  }
+}

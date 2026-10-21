@@ -1,0 +1,4 @@
+{
+  "max_new_tokens": 1024,
+  "repetition_penalty": 1.05
+}

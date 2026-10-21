@@ -1,0 +1,411 @@
+"""
+Tool calling SFT data task (Stage 4 of PLAN.md — "the one stage you must write").
+
+Why this file exists
+--------------------
+nanochat's stock SFT mixture is SmolTalk(smol) + MMLU + GSM8K. The smol-smoltalk
+card states it deliberately EXCLUDES function calling for small models, so nothing in
+the stock mixture teaches the model to emit a call. PLAN.md's Stage 4 is therefore
+the one stage that is real data engineering, and this file is it.
+
+Design decisions (the ones that matter)
+----------------------------------------
+1) *Loss lands only on the emitted call.* The JSON schema of the available tools is
+   huge and is pure conditioning — it belongs in the prompt (mask 0), never in the
+   target. nanochat's `render_conversation` gives us exactly this for free: a user
+   message is always masked 0, and assistant text is always masked 1. So the tool
+   list rides in the user turn and the call rides in the assistant turn. We never
+   have to touch the tokenizer.
+
+2) *Tool results are masked out.* A `tool` role message is not a role nanochat's
+   tokenizer knows about, so we fold the result back into the conversation as an
+   assistant-visible but *unsupervised* part, using the existing `python_output`
+   part type, which `render_conversation` already emits with mask 0. That keeps
+   multi-turn trajectories trainable without teaching the model to hallucinate
+   tool outputs (which at inference time come from the environment, not the model).
+
+3) *We re-derive the call from the record, not by regex on the target.* The hermes
+   records embed zero-width joiners in their <tool_call> tags. Parsing the
+   assistant string is brittle. Instead we parse the *tools* field for names/schemas
+   and parse the assistant turn only to recover which name+arguments to emit.
+
+License: hermes-function-calling-v1 is Apache-2.0. (xLAM-60k, which PLAN.md names,
+is gated on the Hub and was not accessible from this node — see EXECUTION_LOG.md.)
+"""
+
+import json
+import os
+import re
+
+from tasks.common import Task
+
+# The hermes corpus uses a zero-width space inside its tool-call tags; normalize.
+_TOOL_CALL_RE = re.compile(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", re.DOTALL)
+_TOOL_RESP_RE = re.compile(r"<\s*tool_response\s*>(.*?)<\s*/\s*tool_response\s*>", re.DOTALL)
+_ZERO_WIDTH = dict.fromkeys(map(ord, "‌‍﻿"), None)
+
+DEFAULT_PATH = os.environ.get(
+    "TOOLCALL_DATA",
+    "/data/rowel/data/hermes/func-calling.json",
+)
+
+
+def _loads(s):
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        return None
+
+
+def extract_calls(assistant_text):
+    """Return a list of (name, arguments_dict) parsed out of one assistant turn."""
+    text = (assistant_text or "").translate(_ZERO_WIDTH)
+    calls = []
+    for m in _TOOL_CALL_RE.finditer(text):
+        obj = _loads(m.group(1))
+        if not isinstance(obj, dict):
+            continue
+        name = obj.get("name")
+        args = obj.get("arguments")
+        if isinstance(args, str):
+            args = _loads(args)
+        if name and isinstance(args, dict):
+            calls.append((name, args))
+    return calls
+
+
+def render_tools_prompt(tools, extra_instruction=None):
+    """
+    Put the tool schemas in the *user* turn so the loss never sees them.
+    This is the single most important recipe detail in the stage: a 2B model given
+    5 schemas will otherwise burn its capacity memorizing schemas it never emits.
+    """
+    lines = [json.dumps(t, separators=(",", ":")) for t in tools]
+    prompt = (
+        "You have access to the following tools:\n"
+        + "\n".join(lines)
+        + "\n\nTo call a tool, reply with a single line of the form "
+          "CALL <name> <json-args>. Call exactly one tool per reply."
+    )
+    if extra_instruction:
+        prompt = extra_instruction + "\n\n" + prompt
+    return prompt
+
+
+class ToolCalling(Task):
+    """Function-calling SFT data rendered into nanochat's chat format."""
+
+    def __init__(self, path=DEFAULT_PATH, split="train", val_fraction=0.05,
+                 max_examples=None, truncate_terminal_call=None, **kwargs):
+        super().__init__(**kwargs)
+        # Stage 4 v3. Measured on model_015548.pt (val_bpb 0.31480) with probe_wide.py
+        # over the FULL val populations (hermes 54, ToolACE 182, n=236):
+        #
+        #   budget 512 -> 1024 changed nothing  => the token-cap truncation
+        #   hypothesis is dead; over-calling is real, not a harness artifact.
+        #   hermes:      fn acc 94.6%, 30/31 first-divergences are the right name
+        #                with wrong args, 23/54 match the whole reference then
+        #                emit +4.35 more calls
+        #   ToolACE:     fn acc 58.2%, 69/174 first-divergences are the WRONG name
+        #
+        # Root cause of the hermes half: every one of the 1,036 hermes TRAIN
+        # conversations has its single assistant turn ending in python_output
+        # (100%), because `_convert` attaches the tool result to the assistant
+        # turn that made the call. So hermes teaches
+        # "call -> tool result -> ...", and at inference the environment supplies
+        # results that the eval never shows -- the exact transition the model
+        # fails to make. ToolACE got truncate_to_terminal_call() in v2 (e404ea0);
+        # hermes never did, because hermes is only 1,036 of 818,702 mixture rows.
+        #
+        # Default: ON for train (fix the targets), OFF for val (the eval reference
+        # must stay the full conversation, or the acceptance metric would be
+        # measured against targets we rewrote).
+        if truncate_terminal_call is None:
+            truncate_terminal_call = (split == "train")
+        self.truncate_terminal_call = truncate_terminal_call
+        with open(path, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        examples = []
+        for row in rows:
+            ex = self._convert(row)
+            if ex is not None:
+                examples.append(ex)
+        # deterministic split so eval never leaks into training
+        n_val = max(1, int(len(examples) * val_fraction))
+        if split == "val":
+            examples = examples[:n_val]
+        else:
+            examples = examples[n_val:]
+        if max_examples is not None:
+            examples = examples[:max_examples]
+        self.examples = examples
+        self.length = len(examples)
+
+    def _convert(self, row):
+        """One hermes row -> a nanochat Conversation (or None if unusable)."""
+        tools = _loads(row.get("tools"))
+        if not isinstance(tools, list) or not tools:
+            return None
+        convs = row.get("conversations") or []
+        messages = []
+        pending = []  # assistant tool calls awaiting a result
+
+        for m in convs:
+            role, val = m.get("from"), m.get("value") or ""
+            if role == "human":
+                # flush any unanswered call into a text part so structure is kept
+                if pending:
+                    messages.append({"role": "assistant", "content": [
+                        {"type": "text", "text": t} for _, t in pending]})
+                    pending = []
+                tools_prompt = render_tools_prompt(tools)
+                if messages:
+                    messages.append({"role": "user", "content": tools_prompt})
+                else:
+                    messages.append({"role": "user",
+                                     "content": val + "\n\n" + tools_prompt})
+            elif role == "gpt":
+                calls = extract_calls(val)
+                if calls:
+                    parts = []
+                    for name, args in calls:
+                        parts.append({"type": "python",
+                                      "text": f"CALL {name} {json.dumps(args, separators=(',', ':'))}"})
+                    pending = [(name, json.dumps(args, separators=(",", ":")))
+                               for name, args in calls]
+                    messages.append({"role": "assistant", "content": parts})
+                else:
+                    if pending:
+                        pending = []
+                    messages.append({"role": "assistant", "content": val})
+            elif role == "tool":
+                # Tool results are environment output: render unsupervised.
+                text = (val or "").translate(_ZERO_WIDTH)
+                resp = _TOOL_RESP_RE.findall(text)
+                if not resp:
+                    resp = [text.strip()]
+                out = [{"type": "python_output", "text": r.strip()} for r in resp if r.strip()]
+                if out and messages and messages[-1]["role"] == "assistant":
+                    # attach the result to the assistant turn that made the call
+                    prev = messages[-1]
+                    if isinstance(prev["content"], list):
+                        prev["content"] = list(prev["content"]) + out
+                # a tool turn must be followed by user or assistant; loop handles it
+
+        if pending:
+            messages.append({"role": "assistant", "content": [
+                {"type": "text", "text": t} for _, t in pending]})
+        # nanochat's renderer asserts strict user/assistant alternation starting at
+        # user. The hermes corpus is NOT strictly alternating: a `tool` turn is
+        # followed directly by a `gpt` turn (both map to assistant). We fold each
+        # same-role run into the previous turn, and for two adjacent *text*
+        # assistant turns we interpose an empty user turn, because the renderer
+        # has no notion of "assistant speaks twice" and would assert.
+        fixed = [messages[0]]
+        for m in messages[1:]:
+            if m["role"] == fixed[-1]["role"]:
+                prev = fixed[-1]
+                if isinstance(prev["content"], list) and isinstance(m["content"], list):
+                    # python / python_output parts concatenate cleanly
+                    prev["content"] = list(prev["content"]) + list(m["content"])
+                    continue
+                # two adjacent assistant text turns: interpose an empty user turn
+                fixed.append({"role": "user", "content": "Continue."})
+                fixed.append(m)
+                continue
+            fixed.append(m)
+        if len(fixed) < 2 or fixed[0]["role"] != "user":
+            return None
+        if fixed[-1]["role"] != "assistant":
+            fixed = fixed[:-1]  # renderer wants to end on the target
+        if not any(isinstance(m["content"], list) and
+                   any(p.get("type") == "python" for p in m["content"]) for m in fixed):
+            return None  # no actual tool call to learn from
+        if self.truncate_terminal_call:
+            fixed = _truncate_terminal_call(fixed)
+        return {"messages": fixed}
+
+    def num_examples(self):
+        return self.length
+
+    def get_example(self, index):
+        return self.examples[index]
+
+    def evaluate(self, conversation, assistant_response):
+        """
+        Does the sampled response call the same function with the same arguments?
+
+        Exact match on the (name, args) sequence. Two partial scores are also
+        returned by `score`, because a 286M model's errors are informative:
+          - function-name accuracy: did it pick the right tool at all?
+          - call-count accuracy: did it emit the right number of calls?
+        """
+        assert isinstance(assistant_response, str)
+        ref = []
+        for m in conversation["messages"]:
+            if m["role"] == "assistant" and isinstance(m["content"], list):
+                for p in m["content"]:
+                    if p.get("type") == "python":
+                        ref.append(_norm_call(p["text"]))
+        if not ref:
+            return 0
+        pred = extract_predicted_calls(assistant_response)
+        return int(pred == ref)
+
+    def score(self, conversation, assistant_response):
+        """Dict of partial credit. See evaluate() for why this is split out."""
+        ref = []
+        for m in conversation["messages"]:
+            if m["role"] == "assistant" and isinstance(m["content"], list):
+                for p in m["content"]:
+                    if p.get("type") == "python":
+                        ref.append(_norm_call(p["text"]))
+        pred = extract_predicted_calls(assistant_response)
+        if not ref:
+            return {"exact": 0, "fn": 0, "count": 0, "n_ref": 0}
+        fn = sum(1 for r, p in zip(ref, pred) if p[0] == r[0])
+        return {
+            "exact": int(pred == ref),
+            "fn": fn / len(ref),
+            "count": int(len(pred) == len(ref)),
+            "n_ref": len(ref),
+        }
+
+
+def _truncate_terminal_call(messages):
+    """End the trajectory "call(s) -> <|assistant_end|>", keeping ALL calls.
+
+    Stage 4 v3. Counterpart to `tasks.toolace.truncate_to_terminal_call` (v2,
+    commit e404ea0), which was only ever applied to ToolACE.
+
+    Every hermes train conversation has its tool calls ending in python_output,
+    because `_convert` attaches each tool result to the assistant turn that made
+    the call (100% of 1,036 examples). So hermes alone teaches "call -> tool
+    result", and at inference the environment supplies results that eval never
+    displays -- so the model never learns to stop after the last call.
+
+    Measured consequence on model_015548.pt (probe_wide.py, full val populations):
+    23/54 hermes val examples match the ENTIRE reference as a correct prefix and
+    then emit +4.35 further calls; 94.6% function-name accuracy. The knowledge is
+    present; only the stop transition is missing.
+
+    Two structural cases, both measured on the 1,036 train conversations:
+      * 159 end with the list-form (call-bearing) assistant turn -> truncate that.
+      * 877 end with a trailing plain-text assistant turn ("Continue." + a
+        summary of what was done). The calls live in an EARLIER turn. We drop the
+        trailing prose turn and truncate the call-bearing one, so the supervised
+        target is calls -> <|assistant_end|>.
+
+    For the 877 case we also drop the synthetic "Continue." user turn, which
+    exists only to satisfy the renderer's strict alternation assert and carries
+    no task content. Everything before it is untouched.
+
+    Tool results are masked 0 by the renderer either way, so dropping them
+    removes no supervision -- it only changes what FOLLOWS the final call.
+    The call COUNT is preserved deliberately: 64.8% of hermes val references
+    need more than one call, so capping at one would cap exact match at 35.2%.
+    """
+    # Work on a copy; never mutate the caller's structure.
+    msgs = [dict(m) for m in messages]
+
+    def _collapse(turn):
+        content = turn.get("content")
+        if not isinstance(content, list):
+            return turn, False
+        calls = [p for p in content if p.get("type") == "python"]
+        if not calls or len(calls) == len(content):
+            return turn, False  # no calls, or already call-only
+        new = dict(turn)
+        new["content"] = calls
+        return new, True
+
+    # Drop trailing plain-text assistant turns (and the "Continue." user turn
+    # that the renderer alternation fix inserted in front of them).
+    while msgs and msgs[-1].get("role") == "assistant" and \
+            not isinstance(msgs[-1].get("content"), list):
+        msgs.pop()
+        if msgs and msgs[-1].get("role") == "user" and \
+                isinstance(msgs[-1].get("content"), str) and \
+                msgs[-1]["content"].strip() == "Continue.":
+            msgs.pop()
+
+    if not msgs or msgs[-1].get("role") != "assistant":
+        return messages  # nothing usable to collapse; leave original untouched
+
+    new_last, changed = _collapse(msgs[-1])
+    if not changed:
+        return messages
+    msgs[-1] = new_last
+    return msgs
+
+
+def _looks_like_call(line):
+    """Heuristic: does this line contain a function-name + JSON-args pair?"""
+    m = re.match(r'^([A-Za-z_][A-Za-z0-9_]{2,})\s*(\{.*\})\s*$', line)
+    return bool(m)
+
+
+def _norm_call(line):
+    """Normalize a 'CALL name {json}' line for robust comparison.
+
+    Tolerates the model's real failure modes at this scale: it may forget the
+    literal CALL keyword, and it may emit several calls on one line separated by
+    python_end/python_start markers rather than newlines. Comparison is on
+    (name, args) only -- never on formatting.
+    """
+    line = line.strip()
+    # strip any leftover special-token markers
+    for marker in ("<|python_start|>", "<|python_end|>", "<|assistant_start|>"):
+        line = line.replace(marker, "\n" if marker.endswith("start|>") else "")
+    if line.startswith("CALL"):
+        line = line[4:].strip()
+    name, _, argstr = line.partition(" ")
+    try:
+        args = json.loads(argstr)
+        if not isinstance(args, dict):
+            return (name, argstr.strip())
+        return (name, json.dumps(args, sort_keys=True, separators=(",", ":")))
+    except json.JSONDecodeError:
+        return (name, argstr.strip())
+
+
+def extract_predicted_calls(completion):
+    """Pull predicted (name, args) pairs out of a raw model completion."""
+    text = (completion or "").translate(_ZERO_WIDTH)
+    calls = []
+    for chunk in re.split(r"<\s*\|\s*python_end\s*\|\s*>", text):
+        chunk = re.sub(r"<\s*\|\s*python_start\s*\|\s*>", " ", chunk)
+        chunk = re.sub(r"<\s*\|\s*assistant_end\s*\|\s*>", "\n", chunk)
+        for line in chunk.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("CALL"):
+                calls.append(_norm_call(line))
+            elif _looks_like_call(line):
+                calls.append(_norm_call(line))
+    return calls
+
+
+if __name__ == "__main__":
+    t = ToolCalling(split="train")
+    print(f"train examples: {len(t)}")
+    v = ToolCalling(split="val")
+    print(f"val examples:   {len(v)}")
+    ex = t[0]
+    print("\n--- example 0 ---")
+    for m in ex["messages"]:
+        if isinstance(m["content"], str):
+            print(f"[{m['role']}] {m['content'][:220]}")
+        else:
+            for p in m["content"]:
+                print(f"[{m['role']}/{p['type']}] {p['text'][:220]}")
+    print("\n--- masks (1 = supervised) ---")
+    from nanochat.tokenizer import get_tokenizer
+    tok = get_tokenizer()
+    ids, mask = tok.render_conversation(ex)
+    sup = sum(mask)
+    print(f"total tokens {len(ids)}, supervised {sup} ({sup/len(ids):.0%})")

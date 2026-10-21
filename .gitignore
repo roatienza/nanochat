@@ -8,9 +8,36 @@ wandb/
 
 # Large raw training-runtime logs. These are the full stdout of multi-hour
 # GPU runs (up to 1.8 MB) and are reproducible from the launchers; the small
-# evidence logs (<=10 KB) stay tracked. See EXECUTION_LOG.md for the numbers
-# extracted from these.
+# evidence logs (<=10 KB) stay tracked. See docs/EXECUTION_LOG.md for the
+# numbers extracted from these.
 scripts/stage5_rl.log
 scripts/stage5_rl_warmup.log
 scripts/stage5a_warmup.log
 logs/stage6_rl_pilot.log
+
+# --- nanochat/ (vendored training + serving code) ---
+# Runtime artifacts only; all source is tracked.
+nanochat/.venv/
+nanochat/wandb/
+nanochat/out/
+nanochat/dev-ignore/
+nanochat/eval_bundle/
+nanochat/report.md
+nanochat/.pytest_cache/
+
+# serving runtime logs (the guard writes these next to guard_proxy.py)
+nanochat/serving/*.log
+nanochat/serving/guard_aborts.log
+nanochat/serving/guard_last_content.txt
+nanochat/serving/*.json.lock
+nanochat/serving/export_v6j.log
+
+# model weights and exports (8 GB each; regenerate with
+# nanochat/serving/pack_v6j.sh)
+nanochat/serving/model_assets/model.safetensors
+nanochat/serving/nanochat-d28b-rl100-128k-*/
+*.safetensors
+*.pth
+
+# secrets
+.env

@@ -1,0 +1,156 @@
+{#- nanochat chat template v4 - v3 + tool results as user turns (toolfollowup) -#}
+{#- system messages are merged into the following user message (renderer behavior) -#}
+{#- v6: tools block on the LAST user turn (the turn that acts). The v5 -#}
+{#- placement (first user turn) matches fresh sessions but diverges from -#}
+{#- training when history is long: the 2B model loses the block->action -#}
+{#- association and hallucinates tool names. v6 = the shape the SFT rows -#}
+{#- actually teach (block adjacent to the acting turn). -#}
+{#- the exact Stage-4 recipe format, appended to the last user turn. Each tool -#}
+{#- is serialized COMPACT (separators=(",", ":")) and insertion-ordered, which -#}
+{#- is the format the model was SFT'd on (spaced/sorted JSON is OOD and makes -#}
+{#- it emit garbage args). transformers' tojson override accepts separators. -#}
+{%- set ns = namespace(body='', tools_block='', tools_emitted=false, pending_tool_results='') -%}
+{%- set msgs = messages -%}
+{%- if tools -%}
+  {%- for t in tools -%}
+    {%- set ns.tools_block = ns.tools_block ~ (t | tojson(separators=(',', ':'))) -%}
+    {%- if not loop.last -%}
+      {%- set ns.tools_block = ns.tools_block ~ '\n' -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- set ns.tools_block = ns.tools_block ~ '\n\nTo call a tool, reply with a single line of the form CALL <name> <json-args>. Call exactly one tool per reply.' -%}
+  {%- set ns.tools_block = 'You have access to the following tools:\n' ~ ns.tools_block -%}
+{%- endif -%}
+{%- set ns.has_tools = ns.tools_block != '' -%}
+{#- v6: find the LAST user turn index (the turn that acts on the tools) -#}
+{%- set ns.last_user = -1 -%}
+{%- for m in msgs -%}
+  {%- if m['role'] == 'user' -%}{%- set ns.last_user = loop.index0 -%}{%- endif -%}
+{%- endfor -%}
+{#- emit turns, merging a leading system message into the first user turn -#}
+{%- for m in msgs -%}
+  {%- if loop.first and m['role'] == 'system' -%}
+    {%- if m['content'] is string -%}
+      {%- set sys_c = m['content'] -%}
+    {%- else -%}
+      {%- set sys_c = namespace(t='') -%}
+      {%- for part in m['content'] -%}
+        {%- if part['type'] == 'text' -%}
+          {%- set sys_c.t = sys_c.t ~ part['text'] -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- set sys_c = sys_c.t -%}
+    {%- endif -%}
+    {%- set next_is_user = msgs[1]['role'] == 'user' -%}
+    {%- if next_is_user -%}
+      {%- set u = msgs[1] -%}
+      {%- if u['content'] is string -%}
+        {%- set u_c = u['content'] -%}
+      {%- else -%}
+        {%- set u_parts = namespace(t='') -%}
+        {%- for part in u['content'] -%}
+          {%- if part['type'] == 'text' -%}
+            {%- set u_parts.t = u_parts.t ~ part['text'] -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- set u_c = u_parts.t -%}
+      {%- endif -%}
+      {%- if ns.has_tools and ns.last_user == 1 -%}
+        {%- set ns.body = ns.body ~ '<|user_start|>' ~ sys_c ~ "\n\n" ~ u_c ~ "\n\n" ~ ns.tools_block ~ '<|user_end|>' -%}
+        {%- set ns.tools_emitted = true -%}
+      {%- else -%}
+        {%- set ns.body = ns.body ~ '<|user_start|>' ~ sys_c ~ "\n\n" ~ u_c ~ '<|user_end|>' -%}
+      {%- endif -%}
+    {%- else -%}
+      {%- if ns.has_tools -%}
+        {%- set ns.body = ns.body ~ '<|user_start|>' ~ sys_c ~ "\n\n" ~ ns.tools_block ~ '<|user_end|>' -%}
+        {%- set ns.tools_emitted = true -%}
+      {%- else -%}
+        {%- set ns.body = ns.body ~ '<|user_start|>' ~ sys_c ~ '<|user_end|>' -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- elif loop.first == false and msgs[0]['role'] == 'system' and loop.index0 == 1 -%}
+    {#- skip: already merged above -#}
+  {%- elif m['role'] == 'user' -%}
+    {%- if m['content'] is string -%}
+      {%- set u_c = m['content'] -%}
+    {%- else -%}
+      {%- set u_parts = namespace(t='') -%}
+      {%- for part in m['content'] -%}
+        {%- if part['type'] == 'text' -%}
+          {%- set u_parts.t = u_parts.t ~ part['text'] -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- set u_c = u_parts.t -%}
+    {%- endif -%}
+    {#- v6: tools go into the LAST user turn (the turn that acts) -#}
+    {%- if ns.has_tools and not ns.tools_emitted and loop.index0 == ns.last_user -%}
+      {%- set ns.body = ns.body ~ '<|user_start|>' ~ u_c ~ "\n\n" ~ ns.tools_block ~ '<|user_end|>' -%}
+      {%- set ns.tools_emitted = true -%}
+    {%- else -%}
+      {%- set ns.body = ns.body ~ '<|user_start|>' ~ u_c ~ '<|user_end|>' -%}
+    {%- endif -%}
+  {%- elif m['role'] == 'assistant' -%}
+    {%- set ns.body = ns.body ~ '<|assistant_start|>' -%}
+    {%- if m.get('tool_calls') -%}
+      {#- OpenAI assistant tool_calls -> nanochat python parts -#}
+      {%- for tc in m['tool_calls'] -%}
+        {%- set fn = tc.get('function', {}) -%}
+        {%- set tc_args = fn.get('arguments', '{}') -%}
+        {%- if tc_args is not string -%}{%- set tc_args = (tc_args | tojson(separators=(',', ':'))) -%}{%- endif -%}
+        {%- set ns.body = ns.body ~ '<|python_start|>CALL ' ~ fn.get('name', '') ~ ' ' ~ tc_args ~ '<|python_end|>' -%}
+      {%- endfor -%}
+    {%- elif m['content'] is string -%}
+      {%- set ns.body = ns.body ~ m['content'] -%}
+    {%- elif m['content'] -%}
+      {%- for part in m['content'] -%}
+        {%- if part['type'] == 'text' -%}
+          {%- set ns.body = ns.body ~ part['text'] -%}
+        {%- elif part['type'] == 'python' -%}
+          {%- set ns.body = ns.body ~ '<|python_start|>' ~ part['text'] ~ '<|python_end|>' -%}
+        {%- elif part['type'] == 'python_output' -%}
+          {%- set ns.body = ns.body ~ '<|output_start|>' ~ part['text'] ~ '<|output_end|>' -%}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+    {%- set ns.body = ns.body ~ '<|assistant_end|>' -%}
+  {%- elif m['role'] == 'tool' -%}
+    {#- v4: OpenAI tool result -> a USER turn "Tool result: ...". The v5 -#}
+    {#- checkpoint was trained (tasks/toolfollowup.py) to answer prose after -#}
+    {#- this exact shape; the old <|output_start|> block after -#}
+    {#- <|assistant_end|> was out-of-distribution and made gen2 degenerate. -#}
+    {#- Consecutive tool messages merge into ONE user turn (\n-joined), -#}
+    {#- matching the shape-P training rows. -#}
+    {%- set tr = '' -%}
+    {%- if m['content'] is string -%}
+      {%- set tr = m['content'] -%}
+    {%- else -%}
+      {%- for part in m['content'] -%}
+        {%- if part['type'] == 'text' -%}
+          {%- set tr = tr ~ part['text'] -%}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+    {%- if ns.pending_tool_results -%}
+      {%- set ns.pending_tool_results = ns.pending_tool_results ~ '\n' ~ tr -%}
+    {%- else -%}
+      {%- set ns.pending_tool_results = tr -%}
+    {%- endif -%}
+  {%- endif -%}
+  {#- flush buffered tool results as a user turn before the next non-tool msg -#}
+  {%- if ns.pending_tool_results and not loop.last -%}
+    {%- set nxt = msgs[loop.index if loop.index < msgs|length else loop.index - 1] -%}
+    {%- if nxt['role'] != 'tool' -%}
+      {%- set ns.body = ns.body ~ '<|user_start|>Tool result: ' ~ ns.pending_tool_results ~ '<|user_end|>' -%}
+      {%- set ns.pending_tool_results = '' -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- if ns.pending_tool_results -%}
+  {%- set ns.body = ns.body ~ '<|user_start|>Tool result: ' ~ ns.pending_tool_results ~ '<|user_end|>' -%}
+{%- endif -%}
+{{- '<|bos|>' -}}
+{{- ns.body -}}
+{%- if add_generation_prompt -%}
+{{- '<|assistant_start|>' -}}
+{%- endif -%}
