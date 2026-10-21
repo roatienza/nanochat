@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, COMPUTE_DTYPE
 from nanochat.gpt import GPT, GPTConfig, norm
 from nanochat.checkpoint_manager import load_checkpoint, save_checkpoint
-from nanochat.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit, tokenizing_distributed_data_loader_bos_bestfit
+from nanochat.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit, tokenizing_distributed_data_loader_bos_bestfit, PrefetchLoader
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 
 parser = argparse.ArgumentParser(description="Stage 7a: long-context continued pretraining (131072)")
@@ -123,6 +123,25 @@ def _group_forward(model, idx, cos_sin, x_in, lo, hi):
         x = x + out
     return x
 
+
+# -----------------------------------------------------------------------------
+# torch.compile
+# -----------------------------------------------------------------------------
+# The long-context trainer was one of the stages that never compiled. Its
+# shapes are FIXED (device_batch_size x max_seq_len, every step), so
+# dynamic=False is safe and there is no recompilation thrash.
+#
+# We compile the PER-BLOCK inner function rather than the whole model: the
+# outer function uses torch.utils.checkpoint, and compiling a function that
+# contains a checkpoint region either fails to trace or loses the
+# recomputation. Compiling the block body keeps the checkpointing intact
+# while still fusing the attention and MLP matmuls.
+_COMPILE = os.environ.get("NANOCHAT_COMPILE", "1") != "0"
+if _COMPILE:
+    _group_forward = torch.compile(_group_forward, dynamic=False)
+    print0("torch.compile: enabled (per-block)")
+
+
 def longctx_forward_loss(model, idx, targets):
     B, T = idx.size()
     cos_sin = model.cos[:, :T], model.sin[:, :T]
@@ -196,6 +215,10 @@ def reload_opt_to_gpu():
 # Data: climbmix, packed at 131072 with BOS bestfit (same loader as pretrain).
 train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(
     tokenizer, args.device_batch_size, args.max_seq_len, split="train", device=device)
+# Prefetch in a background thread: the loader is CPU-bound (tokenize + pack
+# 131,072-token rows) and the loop below asks for the next batch right after
+# backward(), so without this the GPU idles on the CPU. See PrefetchLoader.
+train_loader = PrefetchLoader(train_loader)
 build_val_loader = lambda: tokenizing_distributed_data_loader_bos_bestfit(
     tokenizer, args.device_batch_size, args.max_seq_len, split="val", device=device)
 
@@ -279,7 +302,13 @@ for step in range(args.num_iterations + 1):
         loss = longctx_forward_loss(model, x, y)
         train_loss = loss.detach()
         (loss / grad_accum_steps).backward()
-        x, y, dataloader_state_dict = next(train_loader)
+        if micro < grad_accum_steps - 1:
+            # Need the next micro-batch now. With the prefetching loader it
+            # is already built, so this returns immediately.
+            x, y, dataloader_state_dict = next(train_loader)
+    # Fetch the next batch for the NEXT step. The prefetching loader has
+    # already built it in the background, so this does not stall.
+    x, y, dataloader_state_dict = next(train_loader)
     lrm = get_lr_multiplier(step)
     for group in optimizer.param_groups:
         group["lr"] = group["initial_lr"] * lrm

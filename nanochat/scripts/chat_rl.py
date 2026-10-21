@@ -72,6 +72,22 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-rl
 
 # Init model and tokenizer
 model, tokenizer, meta = load_model("sft", device, phase="eval", model_tag=args.model_tag, step=args.model_step)
+
+# -----------------------------------------------------------------------------
+# torch.compile -- TRAINING forward only
+# -----------------------------------------------------------------------------
+# The Engine samples from the EAGER model (it needs a KV cache and a
+# different input shape every decode step, which a compiled wrapper does
+# not take well). The training forward, on the other hand, is a plain
+# full-sequence forward, and it is the hot path.
+#
+# The RL sequences are VARIABLE LENGTH (chat_rl.py pads each batch to
+# max(len(seq))), so dynamic=False would trigger a recompile for every new
+# length. dynamic=True compiles once and handles any shape.
+train_model = model
+if os.environ.get("NANOCHAT_COMPILE", "1") != "0":
+    train_model = torch.compile(model, dynamic=True)
+    print0("torch.compile: enabled for the training forward (dynamic=True)")
 engine = Engine(model, tokenizer) # for sampling rollouts
 
 # -----------------------------------------------------------------------------
@@ -261,7 +277,7 @@ for step in range(num_steps):
             rewards = rewards_all[b0:b1]
             advantages = advantages_all[b0:b1]
             # Calculate log probabilities. Note that the loss calculates NLL = -logp, so we negate
-            logp = -model(inputs, targets, loss_reduction='none').view_as(inputs) # (B, T)
+            logp = -train_model(inputs, targets, loss_reduction='none').view_as(inputs) # (B, T)
             # Calculate the PG objective. Note that ignore_index=-1 ensures that invalid tokens have loss 0.
             pg_obj = (logp * advantages.unsqueeze(-1)).sum()
             # normalize by the number of valid tokens, number of passes, and examples_per_rank

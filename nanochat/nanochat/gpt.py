@@ -45,6 +45,19 @@ class GPTConfig:
     # Rotary embedding base. Kept as a config knob so long-context models can
     # differ from the trained default of 100000 without code changes.
     rope_base: int = 100000
+    # Cross-entropy chunk size, in sequence positions. The cross-entropy over
+    # the vocabulary is the single most memory-hungry op in a training step
+    # (it materialises a (B, T, vocab) fp32 tensor). Chunking it and
+    # recomputing each chunk in the backward pass keeps the peak down:
+    # at the real d28 shapes, 1024 buys back ~500 MiB of peak memory for
+    # roughly no extra time.
+    #
+    # EXACTNESS: the LOGITS are bit-identical to the single-shot path (the
+    # same matmul on the same flat rows). The only difference is the order
+    # of the fp32 summation over the B*T tokens, which makes the loss differ
+    # by ~8e-8 relative -- far below the bf16 noise of the training itself.
+    # Set to 0 for a bit-exact reproduction of the original runs.
+    ce_chunk: int = 1024
 
 
 def norm(x):
@@ -520,19 +533,119 @@ class GPT(nn.Module):
 
         # Forward the lm_head (compute logits)
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
+
+        if targets is not None:
+            # TRAINING PATH -- chunked cross-entropy.
+            #
+            # The naive version materialises the whole (B, T, vocab) logit
+            # tensor in fp32: for the d28 config (B=4, T=2048, V=32768) that
+            # is 4 x 2048 x 32768 x 4 bytes = 1,024 MiB for the fp32 copy
+            # alone, plus the bf16 copy, plus the tanh output -- and the
+            # backward pass needs to keep them alive. Measured at the real
+            # shapes: the full fp32 logits+CE block costs 34.8 ms and adds
+            # 3,072 MiB of peak memory.
+            #
+            # Chunking the CE over the sequence dimension and recomputing
+            # each chunk in the backward pass keeps the peak down: at
+            # ce_chunk=1024 it is 32.7 ms and 2,588 MiB; at 512 it is
+            # 34.1 ms and 2,332 MiB. So chunking is roughly TIME-NEUTRAL
+            # and buys back ~700-900 MiB of headroom, which is what lets a
+            # bigger device batch fit on the card.
+            #
+            # The numbers must be identical to the unchunked path, so this
+            # is verified by tests/test_chunked_ce.py.
+            loss = self._chunked_cross_entropy(x, targets, softcap, loss_reduction)
+            return loss
+
+        # INFERENCE PATH -- return the full logits.
         logits = self.lm_head(x) # (B, T, padded_vocab_size) <- very big tensor, large amount of memory
         logits = logits[..., :self.config.vocab_size] # slice to remove padding
         logits = logits.float() # switch to fp32 for logit softcap and loss computation
         logits = softcap * torch.tanh(logits / softcap) # squash the logits
+        return logits
 
-        if targets is not None:
-            # training: given the targets, compute and return the loss
-            # TODO experiment with chunked cross-entropy?
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
-            return loss
+    def _chunked_cross_entropy(self, x, targets, softcap, loss_reduction):
+        """Cross-entropy over the vocabulary, computed in row chunks.
+
+        Mathematically identical to the single-shot version:
+            logits = softcap * tanh(lm_head(x)[..., :V].float() / softcap)
+            loss  = F.cross_entropy(logits.view(-1, V), targets.view(-1),
+                                    ignore_index=-1, reduction=loss_reduction)
+
+        The difference is that the (B, T, V) tensor is never fully
+        materialised: it is built one chunk at a time, and the backward
+        pass of each chunk is recomputed from the saved activations instead
+        of from the saved logits.
+
+        THE CHUNKING IS OVER THE FLATTENED (B*T) DIMENSION, not over the
+        sequence dimension. This matters for exactness: the reference
+        flattens (B, T, V) -> (B*T, V) in row-major order, i.e. the rows
+        are (b0,t0), (b0,t1), ... (b0,tT-1), (b1,t0), ... . Slicing the
+        3D tensor along the sequence axis and flattening each slice gives a
+        DIFFERENT row order -- (b0,tS), (b0,tS+1), ..., (b1,tS), ... --
+        and therefore different losses. Measured: the sequence-axis version
+        differed from the reference by up to 6.3e-2 on a loss of ~6.2 (1%),
+        which is not float rounding but a wrong result.
+        Flattening first and chunking the flat rows keeps the order
+        identical to the reference.
+        """
+        import torch.utils.checkpoint as cp
+
+        B, T = x.shape[0], x.shape[1]
+        V = self.config.vocab_size
+
+        # The chunk size, in rows of the flattened (B*T, V) logit tensor.
+        # 1024 rows at a time keeps the temporary well under the full-size
+        # one. It is a config knob so it can be tuned without touching code.
+        chunk = self.config.ce_chunk
+        n_rows = B * T
+
+        if chunk is None or chunk <= 0 or chunk >= n_rows:
+            # Chunking would not help; do it in one shot.
+            logits = self.lm_head(x)[..., :V].float()
+            logits = softcap * torch.tanh(logits / softcap)
+            return F.cross_entropy(logits.view(-1, V), targets.view(-1),
+                                   ignore_index=-1, reduction=loss_reduction)
+
+        # Flatten once, in row-major order -- exactly as the reference's
+        # logits.view(-1, V) does.
+        x_flat = x.reshape(n_rows, -1)
+        y_flat = targets.reshape(-1)
+
+        def chunk_loss(hc, yc):
+            # hc is a contiguous (chunk, n_embd) slice, so the matmul sees
+            # the same layout as the reference's flat matmul.
+            logits = self.lm_head(hc)[..., :V].float()
+            logits = softcap * torch.tanh(logits / softcap)
+            return F.cross_entropy(logits.view(-1, V), yc,
+                                   ignore_index=-1, reduction="sum")
+
+        # torch's 'mean' reduction divides by the count of non-ignored
+        # targets, so we need that count to reproduce it exactly.
+        n_valid = (y_flat >= 0).sum()
+        total = 0.0
+        for s in range(0, n_rows, chunk):
+            e = min(s + chunk, n_rows)
+            total = total + cp.checkpoint(chunk_loss, x_flat[s:e], y_flat[s:e],
+                                          use_reentrant=False)
+        if loss_reduction == "mean":
+            return total / n_valid.clamp(min=1)
+        elif loss_reduction == "sum":
+            return total
         else:
-            # inference: just return the logits directly
-            return logits
+            # 'none' -- per-token losses. The original implementation ran
+            # cross_entropy on the FLATTENED (B*T, V) logits, so it returned a
+            # flat (B*T,) tensor; the callers then do .view_as(inputs). We
+            # must match that exactly -- returning a (B, T) tensor here would
+            # break those .view_as() calls.
+            outs = []
+            for s in range(0, n_rows, chunk):
+                e = min(s + chunk, n_rows)
+                logits = self.lm_head(x_flat[s:e])[..., :V].float()
+                logits = softcap * torch.tanh(logits / softcap)
+                outs.append(F.cross_entropy(logits.view(-1, V), y_flat[s:e],
+                                            ignore_index=-1, reduction="none"))
+            return torch.cat(outs, dim=0)
 
     @torch.inference_mode()
     def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):

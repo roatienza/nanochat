@@ -41,7 +41,7 @@ run_mod "$LOG_DIR/stage2_sft_tools.log" scripts.chat_sft \
   --device-batch-size 2 --total-batch-size 32768 \
   --init-lr-frac 0.8 \
   --warmup-ratio 0.0 --warmdown-ratio 0.5 --final-lr-frac 0.0 \
-  --eval-every 250 --eval-tokens 20971520 --save-every 5000 \
+  --eval-every "$SFT_EVAL_EVERY" --eval-tokens "$SFT_EVAL_TOKENS" --save-every 5000 \
   --chatcore-every 200 --chatcore-max-cat -1 --chatcore-max-sample 24 \
 || die "stage 2 failed"
 

@@ -15,6 +15,23 @@
 # 171 shards / 15 GB on disk, symlinked to base_data_climbmix/. The LAST
 # shard is pinned as validation; all others are train. See recipe/00_data.sh.
 #
+# EVALUATION BUDGET
+#   The original run evaluated 41,943,040 tokens every 500 steps. That cost
+#   147 s per eval x 556 evals = 25.4 h -- MORE than the 34.3 h of actual
+#   training, and 40% of the 57.35 h wall clock. The evaluation was also
+#   more precise than it needed to be: the standard deviation of a single
+#   estimate at that size was 0.000065 bpb, while the real improvement over
+#   500 steps at the end of training was 0.00021 bpb.
+#
+#   PRETRAIN_EVAL_TOKENS (4,194,304) cuts the cost ~10x while keeping the
+#   noise (0.000204) at the same order as the signal. Set
+#   PRETRAIN_EVAL_TOKENS=41943040 PRETRAIN_EVAL_EVERY=500 to reproduce the
+#   original run exactly. See recipe/config.sh.
+#
+#   --core-metric-every must be set explicitly: base_train.py's DEFAULT is
+#   2000, which would fire 138 times over this run (~4.3 h). The original
+#   run passed 999999. The CORE metric is run once at the end by stage 12.
+#
 # Usage:  ./recipe/01_pretrain.sh
 set -u
 cd "$(dirname "$(readlink -f "$0")")/.."
@@ -40,7 +57,9 @@ run_pretrain() {
          --weight-decay 0.28 \
          --warmup-steps 40 --warmdown-ratio 0.65 --final-lr-frac 0.05 \
          --num-iterations -1 --target-param-data-ratio 8.0 \
-         --eval-every 500 --eval-tokens 41943040 --save-every 5000 \
+         --eval-every "$PRETRAIN_EVAL_EVERY" --eval-tokens "$PRETRAIN_EVAL_TOKENS" \
+         --save-every 5000 \
+         --core-metric-every "$CORE_METRIC_EVERY" \
          --model-tag "$TAG_BASE" ) > "$LOG_DIR/stage1_pretrain.log" 2>&1
 }
 

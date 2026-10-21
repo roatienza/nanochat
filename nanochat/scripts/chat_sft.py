@@ -20,6 +20,7 @@ from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, g
 from nanochat.tokenizer import get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_model, load_optimizer_state
 from nanochat.loss_eval import evaluate_bpb
+from nanochat.dataloader import PrefetchLoader
 import torch.distributed as dist
 from nanochat.flash_attention import HAS_FA3
 from nanochat.engine import Engine
@@ -515,7 +516,7 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
 
         yield inputs, targets
 
-train_loader = sft_data_generator_bos_bestfit("train")
+train_loader = PrefetchLoader(sft_data_generator_bos_bestfit("train"))
 build_val_loader = lambda: sft_data_generator_bos_bestfit("val")
 progress = 0 # will go from 0 to 1 over the course of the epoch
 
@@ -653,8 +654,14 @@ while True:
             scaler.scale(loss).backward()
         else:
             loss.backward()
-        x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+        if micro_step < grad_accum_steps - 1:
+            # Need the next micro-batch now; with the prefetching loader it
+            # is already built, so this returns immediately.
+            x, y = next(train_loader)
         progress = max(progress, approx_progress) # only increase progress monotonically
+    # Fetch the next batch for the NEXT step. The prefetching loader has
+    # already built it in the background, so this does not stall.
+    x, y = next(train_loader)
     # step the optimizer
     lrm = get_lr_multiplier(progress)
     muon_momentum = get_muon_momentum(step)

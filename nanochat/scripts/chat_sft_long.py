@@ -31,6 +31,7 @@ from nanochat.gpt import GPT, GPTConfig, norm
 from nanochat.checkpoint_manager import load_checkpoint, save_checkpoint
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.loss_eval import evaluate_bpb
+from nanochat.dataloader import PrefetchLoader
 from tasks.longctx_sft import LongContextSFT
 from tasks.toolcalling import ToolCalling
 from tasks.toolace import ToolACE
@@ -132,6 +133,24 @@ token_bytes = get_token_bytes(device=device)
 # Long-context forward (same as base_train_long.py).
 x0_holder = [None]
 CE_CHUNK = args.ce_chunk
+
+# -----------------------------------------------------------------------------
+# torch.compile
+# -----------------------------------------------------------------------------
+# The long-context SFT trainer was one of the stages that never compiled.
+# Its shapes are FIXED (device_batch_size x max_seq_len, every step), so
+# dynamic=False is safe and there is no recompilation thrash.
+#
+# We compile the PER-BLOCK inner function rather than the whole model: the
+# outer function uses torch.utils.checkpoint, and compiling a function that
+# contains a checkpoint region either fails to trace or loses the
+# recomputation. Compiling the block body keeps the checkpointing intact
+# while still fusing the attention and MLP matmuls.
+_COMPILE = os.environ.get("NANOCHAT_COMPILE", "1") != "0"
+if _COMPILE:
+    _group_forward = torch.compile(_group_forward, dynamic=False)
+    print0("torch.compile: enabled (per-block)")
+
 
 def _group_forward(model, idx, cos_sin, x_in, lo, hi):
     x = x_in
@@ -359,7 +378,7 @@ def batches(split):
                 targets[i, L - 1:] = -1
         yield inputs, targets
 
-train_batches = batches("train")
+train_batches = PrefetchLoader(batches("train"))
 val_batches = lambda: batches("val")
 
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len
@@ -478,7 +497,13 @@ for step in range(start_step, num_iterations + 1):
         loss = longctx_forward_loss(model, x, y)
         train_loss = loss.detach()
         (loss / grad_accum_steps).backward()
-        x, y = next(train_batches)
+        if micro < grad_accum_steps - 1:
+            # Need the next micro-batch now; with the prefetching loader it
+            # is already built, so this returns immediately.
+            x, y = next(train_batches)
+    # Fetch the next batch for the NEXT step. The prefetching loader has
+    # already built it in the background, so this does not stall.
+    x, y = next(train_batches)
     lrm = get_lr_multiplier(progress)
     for group in optimizer.param_groups:
         group["lr"] = group["initial_lr"] * lrm

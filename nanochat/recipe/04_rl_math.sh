@@ -46,7 +46,7 @@ run_mod "$LOG_DIR/stage4_rl_math.log" scripts.chat_rl \
   --max-new-tokens 512 --temperature 1.0 --top-k 50 \
   --embedding-lr 0.2 --unembedding-lr 0.004 --matrix-lr 0.02 \
   --weight-decay 0.0 --init-lr-frac 0.05 \
-  --eval-every 20 --eval-examples 400 --save-every 100 \
+  --eval-every "$RL_EVAL_EVERY" --eval-examples "$RL_EVAL_EXAMPLES_04" --save-every 100 \
 || die "stage 4 failed"
 
 log "Stage 4 complete. Checkpoint: chatrl_checkpoints/$TAG_RL_WARMUP @ 100"

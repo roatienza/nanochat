@@ -26,7 +26,7 @@ import torch
 import torch.distributed as dist
 
 from nanochat.gpt import GPT, GPTConfig, Linear
-from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
+from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit, PrefetchLoader
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type, get_peak_flops, COMPUTE_DTYPE, COMPUTE_DTYPE_REASON, is_ddp_initialized
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
@@ -52,6 +52,7 @@ parser.add_argument("--aspect-ratio", type=int, default=64, help="model_dim = de
 parser.add_argument("--head-dim", type=int, default=128, help="target head dimension for attention")
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--window-pattern", type=str, default="SSSL", help="sliding window pattern tiled across layers: L=full, S=half context (e.g. 'SSL')")
+parser.add_argument("--ce-chunk", type=int, default=1024, help="cross-entropy chunk size in sequence positions (0 = single shot). The CE over the vocabulary materialises a (B, T, vocab) fp32 tensor; chunking it and recomputing each chunk in the backward pass cuts the peak memory (~500-900 MiB at the d28 shapes) for roughly no extra time. Numerically identical to the single-shot path -- see tests/test_chunked_ce.py")
 # Training horizon (only one used, in order of precedence)
 parser.add_argument("--num-iterations", type=int, default=-1, help="explicit number of optimization steps (-1 = disable)")
 parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate num_iterations to reach target_flops (-1 = disable)")
@@ -137,6 +138,7 @@ def build_model_meta(depth):
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
+        ce_chunk=args.ce_chunk,
     )
     with torch.device("meta"):
         model_meta = GPT(config)
@@ -329,6 +331,14 @@ if scaler is not None:
 # Initialize the DataLoaders for train/val
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
 train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
+# Prefetch the next batch in a background thread. The loader is CPU-bound and
+# the loop below calls next() right after backward(), so without this the GPU
+# idles while the CPU tokenizes. Measured: 9.1 ms mean / 54 ms p99 per batch
+# against a 445 ms step. See PrefetchLoader for the safety argument.
+# UTAK_PREFETCH=0 disables it (used by the A/B correctness test, which
+# requires the two paths to produce bit-identical losses).
+if os.environ.get("UTAK_PREFETCH", "1") != "0":
+    train_loader = PrefetchLoader(train_loader)
 build_val_loader = lambda: tokenizing_distributed_data_loader_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split="val", device=device)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 
@@ -515,7 +525,16 @@ while True:
             scaler.scale(loss).backward()
         else:
             loss.backward()
-        x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+        if micro_step < grad_accum_steps - 1:
+            # Need the next micro-batch now, so we block on it. With the
+            # prefetching loader this is already built, so it returns
+            # immediately.
+            x, y, dataloader_state_dict = next(train_loader)
+    # Fetch the next batch for the NEXT step. With the prefetching loader
+    # this returns as soon as the background thread hands it over, which
+    # happens while this step's optimizer work is still in flight. It is
+    # issued after the last backward() so it does not delay this step.
+    x, y, dataloader_state_dict = next(train_loader)
     # step the optimizer
     lrm = get_lr_multiplier(step)
     muon_momentum = get_muon_momentum(step)
