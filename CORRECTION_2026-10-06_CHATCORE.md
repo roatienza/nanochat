@@ -63,6 +63,14 @@ vs v2's 0%. No blend needed.
 
 ## Files corrected
 
+The per-run `STATUS_*.md` notes have since been consolidated into
+`EXECUTION_LOG.md` and removed from the working tree. The five listed below
+remain readable in git history at commit `4279619`
+(`git show 4279619:STATUS_<name>.md`). The two later notes — the Stage 5
+warmup gate (2026-10-07) and the Stage 6 pilot final (2026-10-10) — were
+never committed, but their full content was folded into `EXECUTION_LOG.md`
+before removal.
+
 - `STATUS_2026-10-06_STAGE4_V3_FINAL.md` — ChatCORE line + residual #2
 - `STATUS_2026-10-05_STAGE4_V2_FINAL.md` — "below Stage 3's 0.082" line
 - `STATUS_2026-10-05_STAGE4_V2_PROBE2.md` — "0.082 verified from log" claim

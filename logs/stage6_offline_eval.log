@@ -1,0 +1,60 @@
+2026-10-10 09:16:25,544 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Loading model from /data/rowel/nanochat_store/v2/chatrl_checkpoints/d28b-rl100 with step 150
+2026-10-10 09:16:35,101 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Building model with config: {'sequence_len': 2048, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL'}
+2026-10-10 09:24:42,584 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Loading model from /data/rowel/nanochat_store/v2/chatrl_checkpoints/d28b-rl100 with step 177
+2026-10-10 09:24:51,965 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Building model with config: {'sequence_len': 2048, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL'}
+=== Evaluating checkpoint step 150 ===
+Step 150 | Pass@1: 0.6000, Pass@2: 0.6667
+Step 150 | per-family/level Pass@1: count_chars@L1:1.00 | count_chars@L2:1.00 | count_chars@L3:0.00 | data_fix@L1:0.00 | data_fix@L2:1.00 | data_fix@L3:1.00 | format_rows@L1:1.00 | format_rows@L2:1.00 | format_rows@L3:0.00 | list_ops@L1:1.00 | list_ops@L2:0.00 | list_ops@L3:0.00 | math_fns@L1:1.00 | math_fns@L2:1.00 | math_fns@L3:0.00
+=== Evaluating checkpoint step 177 ===
+Step 177 | Pass@1: 0.6000, Pass@2: 0.6667
+Step 177 | per-family/level Pass@1: count_chars@L1:1.00 | count_chars@L2:1.00 | count_chars@L3:0.00 | data_fix@L1:0.00 | data_fix@L2:1.00 | data_fix@L3:1.00 | format_rows@L1:1.00 | format_rows@L2:1.00 | format_rows@L3:0.00 | list_ops@L1:1.00 | list_ops@L2:0.00 | list_ops@L3:0.00 | math_fns@L1:1.00 | math_fns@L2:1.00 | math_fns@L3:0.00
+{
+  "150": {
+    "passk": {
+      "1": 0.6,
+      "2": 0.6666666666666666
+    },
+    "per_family": {
+      "count_chars@L1": 1.0,
+      "count_chars@L2": 1.0,
+      "count_chars@L3": 0.0,
+      "data_fix@L1": 0.0,
+      "data_fix@L2": 1.0,
+      "data_fix@L3": 1.0,
+      "format_rows@L1": 1.0,
+      "format_rows@L2": 1.0,
+      "format_rows@L3": 0.0,
+      "list_ops@L1": 1.0,
+      "list_ops@L2": 0.0,
+      "list_ops@L3": 0.0,
+      "math_fns@L1": 1.0,
+      "math_fns@L2": 1.0,
+      "math_fns@L3": 0.0
+    }
+  },
+  "177": {
+    "passk": {
+      "1": 0.6,
+      "2": 0.6666666666666666
+    },
+    "per_family": {
+      "count_chars@L1": 1.0,
+      "count_chars@L2": 1.0,
+      "count_chars@L3": 0.0,
+      "data_fix@L1": 0.0,
+      "data_fix@L2": 1.0,
+      "data_fix@L3": 1.0,
+      "format_rows@L1": 1.0,
+      "format_rows@L2": 1.0,
+      "format_rows@L3": 0.0,
+      "list_ops@L1": 1.0,
+      "list_ops@L2": 0.0,
+      "list_ops@L3": 0.0,
+      "math_fns@L1": 1.0,
+      "math_fns@L2": 1.0,
+      "math_fns@L3": 0.0
+    }
+  }
+}
+Wrote /data/rowel/nanochat_store/v2/stage6_offline_eval_results.json
+EXIT=0

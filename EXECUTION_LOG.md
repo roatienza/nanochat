@@ -1,3 +1,19 @@
+EXECUTION LOG — reasoner-model
+
+Chronological record of the training ladder (Stage 2 pretrain -> Stage 3 SFT ->
+Stage 4 tool calling -> Stage 5 reasoning RL -> Stage 6 agentic RL), the
+measurements behind each decision, and the corrections/retractions along the
+way. Entries are appended in the order they were written, so the file is not
+strictly date-sorted.
+
+2026-10-21: the per-run STATUS_*.md notes were consolidated into this file
+and removed from the repository root. Their unique content (Stage 5 warmup
+gate + RL trajectory, Stage 6 pilot eval curve and per-block breakdown) is
+recorded here in full. The 19 that were committed remain readable in git
+history at commit 4279619 via `git show 4279619:STATUS_<name>.md`; the two
+that never were committed (Stage 5 warmup gate, Stage 6 pilot final) are
+reproduced in the entries below.
+
 2026-10-06 ~10:30 PDT — Stage 3 final ChatCORE measured; "regression" retracted
 
 MEASUREMENT
@@ -81,7 +97,8 @@ ETA - wall clock, not the log field
 
   Correction: the 08:40 entry above said "Finish ~ Oct 3, 05:35 PDT". That was
   wrong by one day - 21.0 h from 08:40 PDT on Oct 3 is Oct 4, not Oct 3. The
-  hour was right, the date was not. STATUS_2026-10-03.md said Oct 4 correctly,
+  hour was right, the date was not. STATUS_2026-10-03.md (git show
+  4279619:STATUS_2026-10-03.md) said Oct 4 correctly,
   so the two files disagreed and EXECUTION_LOG.md was the one at fault.
 
 CHECKPOINTS
@@ -276,7 +293,8 @@ OPEN ITEMS — both now moot, the run is finished
   Disk: / 192 GB free, /data 2.2 TB free. Sep 30 kill cannot recur.
 
 CORRECTIONS TO EARLIER ENTRIES
-  Three errors in my first draft of STATUS_2026-10-04.md, all caught by
+  Three errors in my first draft of STATUS_2026-10-04.md (git show
+  4279619:STATUS_2026-10-04.md), all caught by
   re-deriving from the log instead of carrying notes forward:
     1. Claimed all 557 evals improved. False — 29 ticked up.
     2. Tail gain stated as 0.2132 bpb. Actual 0.095082 (0.810519 at 96,500 is
@@ -360,7 +378,7 @@ STAGE 4 (TOOL CALLING) — RUNNING                          2026-10-04 23:15
 SOURCES
   /data/rowel/serve_logs/stage4/stage4.log
   nanochat commit dccaa9a
-  /data/rowel/reasoner-model/STATUS_2026-10-04_STAGE4.md
+  git show 4279619:STATUS_2026-10-04_STAGE4.md
 
 NEXT
   Stage 4 acceptance: eval_toolcalling.py held-out, compare to the 0.0%
@@ -382,7 +400,7 @@ python parts so training targets end "call -> <|assistant_end|>".
   top_k=1 is byte-identical to top_k=0, so not a sampling pathology.
 
   nanochat e404ea0 -> roatienza/nanochat.  karpathy/nanochat untouched.
-  Detail: STATUS_2026-10-05_STAGE4_V2.md
+  Detail: git show 4279619:STATUS_2026-10-05_STAGE4_V2.md
 2026-10-05 16:35 PDT  Stage 4 v2 step-5,000 probe (corrected, mid-run).  The
 acceptance metric moved off zero for the first time: exact match 3.7% (2/54)
 on held-out hermes, vs 0.0% for Stage 4 v1 checkpoint 15560.  Real termination
@@ -401,11 +419,11 @@ val is still 0.0% (18.39 predicted calls vs 1.91 reference).
   This is step 5,000 of ~15,533, pre-warmdown.  Run ETA ~2.2 h wall clock
   (~19:05 PDT); the v1 curve was still improving at 15,560 so this is an early
   read, not a verdict.  Re-probe the final checkpoint before accepting Stage 4.
-  Detail: STATUS_2026-10-05_STAGE4_V2_PROBE.md
+  Detail: git show 4279619:STATUS_2026-10-05_STAGE4_V2_PROBE.md
 2026-10-05 21:15 PDT  Stage 4 v3 launched: hermes target-truncation fix (the
 v2 root-cause finding applied to hermes, which v2 never got) + reweighted
 mixture (tool rows 3.5% -> 9.3%).  GPUs 3,4,5,7, 66.5k tok/s, 39.3% MFU.
-  Detail: STATUS_2026-10-05_STAGE4_V3.md
+  Detail: git show 4279619:STATUS_2026-10-05_STAGE4_V3.md
 2026-10-06 09:30 PDT  Stage 4 v3 COMPLETE, ACCEPTANCE PASSES.  13,630 steps,
 111.78 min, val_bpb 0.302180 (monotone after step-1k transient), clean
 teardown.  Wide probe on final checkpoint, full populations, 5-GPU sharded:
@@ -418,7 +436,104 @@ fidelity (78.6% fn).  ChatCORE did NOT regress: v3 0.1360 vs Stage 3 final
 `9w53jmjw`, not Stage 3 final — see CORRECTION_2026-10-06_CHATCORE.md).
 GSM8K chatcore 0.0 (24 samples) is a real weakness, shared with v2, for RL.  Checkpoint hygiene: v3 clobbered v2's 5000/10000
 files in the d28b-v2 dir; v2's 15548 final intact.
-  Detail: STATUS_2026-10-06_STAGE4_V3_FINAL.md
+  Detail: git show 4279619:STATUS_2026-10-06_STAGE4_V3_FINAL.md
+2026-10-07 17:33 PDT  Stage 5a warmup gate PASS; Stage 5 RL relaunched from the
+  warmup checkpoint.  (The v1 launch from raw v3 had died at step 7: reward
+  0.0, Pass@1 0.5%, model did arithmetic in-head and never emitted the <calc>
+  format, so REINFORCE had no gradient signal at all.)
+  Warmup = GSM8K x10 + ToolCalling x4 SFT, no SmolTalk/MMLU/ToolACE, fresh
+  optimizer, ~510 steps -> d28b-warmup/model_000509.pt.
+  Gate (scripts/chatcore_eval_driver.py on model_000509.pt, GPU 6, 17:33-17:44
+  PDT, log scripts/chatcore_warmup.log, EXIT=0):
+    ARC-Easy       36.78%   (v3 13630  45.45%)   -8.7
+    ARC-Challenge  31.91%   (v3 13630  34.73%)   -2.8
+    MMLU           31.46%   (v3 13630  33.33%)   -1.9
+    GSM8K          25.00%   (v3 13630   0.00%)  +25.0
+    HumanEval       0.00%   (v3 13630  16.67%)  -16.7
+    ChatCORE        0.1171  (v3 13630  0.1360)  -0.019
+  ChatCORE holds within the noise band (v2's adjacent-checkpoint ChatCORE
+  swung 0.0011 -> 0.0485).  The narrow-mixture cost is real (categorical -2
+  to -9 pts, HumanEval 16.7 -> 0) but small; GSM8K 0% -> 25% is the point of
+  the warmup.
+  Relaunch: scripts/launch_stage5_rl.sh edited to --run=stage5-rl-gsm8k-warmup
+  --model-tag=d28b-warmup --model-step=509.  Launched 17:47:32 PDT on GPU 5
+  (PID 721494; GPU 1 no longer idle, 2.6-3.3 GB foreign load; GPU 5 ~38 GB
+  free).  wandb stage5-rl-gsm8k-warmup (sz9w1qpr).  467 steps, 256 seq/step.
+  RL checkpoints save to chatrl_checkpoints/d28b-warmup/ (separate tree from
+  chatsft_checkpoints/ -- no clobber risk this time).
+  Step-0 gate: Pass@1 0.0050 -> 0.1350, Pass@2 0.0075 -> 0.2125, train reward
+  0.0 -> 0.8945, mean seq len 183.4.  27x on Pass@1; rollouts carry nonzero
+  reward from step 0, so REINFORCE has a real gradient.  The warmup took.
+  Caveat on the 0.8945: RL rolls out on the GSM8K TRAIN split
+  (chat_rl.py:81), the same 7,473 problems the warmup SFT'd 10 epochs on, so
+  train reward is inflated by memorization.  The honest metric is eval Pass@1
+  on the TEST split: 0.1350 at step 0.
+  Pacing (measured): step-0 eval ~25 min (400 ex x 2 samples = 800 gens);
+  steady state ~5.6 min/step (step 0 -> 1: 18:25:23 -> 18:31:02).  ETA ~53 h
+  for 467 steps + 23 evals.  The launcher's earlier 6.3 min/step estimate was
+  measured on an idle node; every GPU carried 99% foreign util that day.
+  Sources: scripts/chatcore_warmup.log (gate eval, EXIT=0),
+  scripts/stage5_rl_warmup.log (this run), scripts/stage5_rl.log (v1
+  baseline: Pass@1 0.0050, SIGTERM at step 7), scripts/launch_stage5_rl.sh,
+  nanochat/scripts/chat_rl.py:81 (train split) and :228 (eval on test split,
+  temp 1.0), nanochat/tasks/gsm8k.py evaluate() (binary final-answer match).
+2026-10-08 09:10 PDT  Stage 5 STOPPED at step 120 (stop-if-flat triggered).
+  Test-split eval trajectory (Pass@1 / Pass@2, 400 problems):
+    step  0    0.1350 / 0.2125
+    step  20   0.1600 / 0.2425
+    step  40   0.1775 / 0.2275   <- peak
+    step  60   0.1700 / 0.2300
+    step  80   0.1725 / 0.2450
+    step  100  0.1600 / 0.2300
+    step  120  0.1575 / 0.2350
+  +4.3 pt by step 40, then flat (steps 40-80 within noise, +/-3.7 pt CI at
+  n=400).  Step-120 Pass@1 is the lowest since step 20.  Train reward
+  saturating (~0.95 avg, exact 1.0 at steps 95-96) -- consistent with the
+  memorization caveat: saturated groups carry near-zero advantage and the
+  gradient dies.
+  VERDICT: RL on the memorized GSM8K mixture is exhausted.  Options for any
+  future RL round: (a) rebuild the rollout set from GSM8K train problems NOT
+  in the warmup SFT mixture, (b) fold RL into Stage 6's agentic tasks where
+  rewards stay fresh.
+  Ledger: warmup 11 h (Oct 7 06:21 -> 17:21) + RL 15.3 h (Oct 7 17:47 ->
+  Oct 8 09:05) ~= 26.3 h for +4.3 pt peak / +2.5 pt at the saved checkpoint
+  (0.1350 -> 0.1600).  SIGTERM at step 120, stopped cleanly.
+  Full log: scripts/stage5_rl_warmup.log.  Checkpoint paths are relative to
+  NANOCHAT_BASE_DIR=/data/rowel/nanochat_store/v2 (the earlier status note
+  implied reasoner-model/chatrl_checkpoints/, which does not exist).
+2026-10-08 17:55 PDT  Stage 6 agentic RL pilot LIVE; two structural findings.
+  Run: stage6-rl-agentic-pilot on GPU 6 (37 GB / 48% util), started 11:31,
+  step 34/178, ~11 min/step (agentic rollouts + sandbox exec are pricier
+  than GSM8K's ~6 min/step).  Base: d28b-rl100 hard-linked to
+  chatsft_checkpoints/d28b-rl100.  First checkpoint save at step 50.
+  Headline -- the pilot's core question answered YES: eval Pass@1 0.0667
+  (step 0) -> 0.2667 (step 20), +20 pt in 20 steps.  Stage 5 took 40 steps
+  for +4.3 pt.  Fresh verifiable reward moves the needle ~5x faster.
+  Per-family at step 20: count_chars L1/L2 = 1.00, math_fns L1 = 1.00 (base)
+  / L2 = 1.00 (improved WITHOUT training on it -- transfer is real).
+  Finding 1 -- L3 blocks are dead zones.  count_chars L3 (steps 24-35)
+  scored exactly 0.000 on all ~2,800 rollouts.  Probe on the base
+  checkpoint (scripts/probe_l3.py): 8/8 passes fail -- 5/8 ramble to the
+  512-token cap without extractable code ("re chairs", "triangles module"
+  garble), others syntax-error.  The L2->L3 jump (dict-of-counts -> top-k by
+  (count desc, alpha asc)) is qualitative for a 561M model.  All-zero group
+  -> zero advantage -> zero gradient -> 12 steps wasted.  Self-recovers at
+  step 36 (list_ops L1); expect 3 more dead zones (list_ops/data_fix/
+  format_rows L3), ~36/178 steps (~20%) wasted.
+  Finding 2 -- instance diversity is hollow.  For L2/L3 the prompt is
+  IDENTICAL across all ~190 instances of a block (instance specifics live
+  only in the hidden tests).  The "2,850 fresh instances" are really 15
+  distinct prompts; the anti-memorization design never engages -- we get
+  per-block template learning with saturation (steps 10-11 hit 0.996-1.0
+  pre-rotation, the Stage 5 pattern in miniature).  L1 partially engages (the
+  target char IS in the prompt).  Probe also confirmed the engine seeds
+  generation per-prompt: identical prompts -> identical sample sets, so
+  effective sample diversity is 16/step, not 256.
+  Plan at the time: let it run to the step-50 checkpoint + step-60 eval
+  (the launcher's own stop-if-flat horizon), then decide.  Fixes queued for
+  round 2: (i) embed instance specifics in the prompt (real diversity),
+  (ii) make L3 reachable (narrow the L2->L3 jump), (iii) interleave easy
+  refreshers so groups keep variance.
 2026-10-10 09:35 PDT  Stage 6 agentic RL pilot COMPLETE + OFFLINE EVAL DONE.
   178/178 steps, 31.5 h on GPU 6, EXIT=0. Pass@1 0.067 -> 0.600 (+53 pts),
   Pass@2 0.120 -> 0.667. Curve monotone through step 120, then flat:
@@ -432,7 +547,56 @@ files in the d28b-v2 dir; v2's 15548 final intact.
   File-state gotcha found: chat_rl_agentic.py lines 136/209 in the CURRENT
   file lost their index subscripts; pyc bytecode forensics prove the file AS
   RUN had them (pilot numbers valid). Fix before any rerun.
-  Detail: STATUS_2026-10-10_STAGE6_PILOT_FINAL.md
+  Run facts: script nanochat/scripts/chat_rl_agentic.py (new; REINFORCE/DAPO
+  core from chat_rl.py untouched, reward source swapped to tasks/agentic.py).
+  Launched by scripts/launch_stage6_rl.sh -- GPU 6, db=2, 16 ex/step, 16
+  samples, temp 1.0, max-new-tokens 512, eval-every 20, eval-examples 150
+  (full val split), save-every 50.  Started 11:31 Oct 8, finished 19:00 Oct 9
+  (31.5 h, 178/178 steps, EXIT=0).  wandb stage6-rl-agentic-pilot (i3jx846z),
+  project nanochat-rl.  Checkpoints in
+  nanochat_store/v2/chatrl_checkpoints/d28b-rl100/:
+  model_000050/000100/000150/000177.pt (6.3 GB each).  NOTE: no step-120 ckpt
+  (save-every 50); the in-run step-120 eval numbers serve as the anchor.
+  Eval curve (150 held-out instances, greedy-equivalent pass@k):
+    step  0 (baseline)   0.067 / 0.120
+    step 20              0.267 / 0.267
+    step 40              0.333 / 0.333
+    step 60              0.407 / 0.407
+    step 80              0.407 / 0.473
+    step 100             0.540 / 0.607
+    step 120             0.600 / 0.667
+    step 140             0.600 / 0.667
+    step 160             0.600 / 0.667
+    150 (offline eval)   0.600 / 0.667
+    177 (offline eval)   0.600 / 0.667
+  Per-block at final (identical at 120/140/150/160/177): mastered (1.00, 9
+  blocks) count_chars L1/L2, math_fns L1/L2, format_rows L1/L2, data_fix
+  L2/L3, list_ops L1; zero (6 blocks) count_chars@L3, math_fns@L3,
+  format_rows@L3, list_ops@L2/L3, data_fix@L1 (regressed 1.00 -> 0.00 at
+  step 100, never recovered).
+  What the plateau means: the uncracked tier (all L3s + list_ops@L2) never
+  moved under this curriculum mix, and data_fix@L1 decayed once its block
+  rotated out of the sampling mix.  The optimizer is not broken -- the reward
+  signal for those blocks just stopped arriving (or never arrived at the right
+  difficulty gradient).
+  Follow-on design for the next session: (1) replay mix -- keep ~30-50% of
+  rollouts on mastered blocks, which fixes the data_fix@L1 decay AND preserves
+  the 9 mastered blocks for free; (2) frontier weighting -- oversample the
+  uncracked tier (L3s + list_ops@L2); if L3 is still 0 after a focused run,
+  the gap is capability, not curriculum, so consider an intermediate L2.5 tier
+  or an SFT cold-start on a few L3 traces; (3) fix the file-state gotcha
+  before any rerun -- current chat_rl_agentic.py lines 136/209 lost their index
+  subscripts (conversation = train_task must be train_task; conversation =
+  task must be task).  Bytecode forensics on the pyc (mtime during the run)
+  prove the file AS RUN had the subscripts, so the pilot's numbers are valid,
+  but the file as it sits now would train on one repeated instance.  The
+  offline script scripts/stage6_offline_eval.py has the correct form.
+  Artifacts: offline eval script nanochat/scripts/stage6_offline_eval.py;
+  offline eval log logs/stage6_offline_eval.log (EXIT=0); offline results
+  JSON nanochat_store/v2/stage6_offline_eval_results.json; training log
+  logs/stage6_rl_pilot.log; L3 probe scripts/probe_l3.py.
+  Detail: consolidated into this entry (the Stage 6 pilot STATUS note was
+  never committed; its full content is reproduced above).
 2026-10-13 09:15 PDT  Stage 6b (curriculum replay + scaffold) COMPLETE + OFFLINE EVAL DONE.
   178/178 steps, ~44 h on GPU 1, EXIT=0 (finished Oct 12 21:41). In-run eval
   curve: step0 0.600/0.667 -> steps 20-160 ALL 0.667/0.667 (Pass@1/Pass@2,

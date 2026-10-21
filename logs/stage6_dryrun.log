@@ -1,0 +1,19 @@
+2026-10-08 11:28:35,015 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Loading model from /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-rl100 with step 100
+2026-10-08 11:28:39,184 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Building model with config: {'sequence_len': 2048, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL'}
+count_chars L1: reward=1.0
+count_chars L2: reward=0.0
+count_chars L3: reward=0.0
+data_fix L1: reward=0.0
+data_fix L2: reward=0.0
+data_fix L3: reward=0.0
+format_rows L1: reward=0.0
+format_rows L2: reward=0.0
+format_rows L3: reward=0.0
+list_ops L1: reward=0.0
+list_ops L2: reward=0.0
+list_ops L3: reward=0.0
+math_fns L1: reward=0.0
+math_fns L2: reward=1.0
+math_fns L3: reward=0.0
+TOTAL: 2.0/15 instances solved at temperature 0 (greedy)
+Per-family: {'count_chars': 1.0, 'data_fix': 0.0, 'format_rows': 0.0, 'list_ops': 0.0, 'math_fns': 1.0}

@@ -1,0 +1,6 @@
+2026-10-08 10:28:17,580 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Building model with config: {'sequence_len': 2048, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL'}
+GEN: The total ratio representing the number of years that D lose and gain is 7+11 = <|python_start|>7+11<|python_end|><|output_start|>18<|output_end|>18
+If the total age of D is 162, Allen is 162-18 = <|python_start|>162-18<|python_end|><|output_start|>144<|output_end|>144 years old now.
+In 10 years, Allen will be 144+10 = <|python_start|>144+10<|python_end|><|output_start|>154<|output_end|>154 years 
+has python_start: True
+reward: 0.0

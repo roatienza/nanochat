@@ -5,3 +5,12 @@ __pycache__/
 wandb/
 *.pt
 *.ckpt
+
+# Large raw training-runtime logs. These are the full stdout of multi-hour
+# GPU runs (up to 1.8 MB) and are reproducible from the launchers; the small
+# evidence logs (<=10 KB) stay tracked. See EXECUTION_LOG.md for the numbers
+# extracted from these.
+scripts/stage5_rl.log
+scripts/stage5_rl_warmup.log
+scripts/stage5a_warmup.log
+logs/stage6_rl_pilot.log
