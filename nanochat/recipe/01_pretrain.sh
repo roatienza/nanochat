@@ -32,6 +32,18 @@
 #   2000, which would fire 138 times over this run (~4.3 h). The original
 #   run passed 999999. The CORE metric is run once at the end by stage 12.
 #
+# RESUME
+#   This is the longest stage in the recipe (~73 h on 2 GPUs, ~145 h on
+#   1). It saves every PRETRAIN_SAVE_EVERY steps, and it can pick up
+#   from the last save automatically: if the checkpoint directory already
+#   holds a model_*.pt, the newest one is used as the resume point.
+#
+#   That matters because a multi-day run on a shared node WILL be
+#   interrupted -- a card gets taken, the node reboots, the queue is
+#   preempted. Without resume, every such event costs the whole stage.
+#
+#   Set PRETRAIN_RESUME=0 to force a clean run from scratch.
+#
 # Usage:  ./recipe/01_pretrain.sh
 set -u
 cd "$(dirname "$(readlink -f "$0")")/.."
@@ -41,6 +53,26 @@ log "=== Stage 1: pretrain -> $TAG_BASE ==="
 log "    GPUs=$GPU_PRETRAIN  base dir=$NANOCHAT_BASE_DIR"
 
 NGPUS=$(awk -F, '{print NF}' <<< "$GPU_PRETRAIN")
+
+# ---------------------------------------------------------------------------
+# Where would we resume from?
+#
+# base_train.py takes --resume-from-step N and loads
+# base_checkpoints/$TAG_BASE/model_<N>.pt plus its optimizer shards and its
+# dataloader state, so the data stream continues where it left off. It does
+# NOT know how to pick the newest checkpoint by itself, so we do it here.
+# ---------------------------------------------------------------------------
+CKPT_DIR="$NANOCHAT_BASE_DIR/base_checkpoints/$TAG_BASE"
+RESUME_STEP=-1
+if [ "${PRETRAIN_RESUME:-1}" = "1" ] && [ -d "$CKPT_DIR" ]; then
+  # The newest model_<step>.pt, by the step number in the name.
+  newest=$(ls -1 "$CKPT_DIR"/model_*.pt 2>/dev/null \
+            | sed -n 's/.*model_\([0-9]\{6\}\)\.pt/\1/p' | sort -n | tail -1)
+  if [ -n "$newest" ]; then
+    RESUME_STEP=$((10#$newest))
+    log "    resuming from step $RESUME_STEP ($CKPT_DIR)"
+  fi
+fi
 
 run_pretrain() {
   ( cd "$NANOCHAT_ROOT" \
@@ -60,6 +92,7 @@ run_pretrain() {
          --eval-every "$PRETRAIN_EVAL_EVERY" --eval-tokens "$PRETRAIN_EVAL_TOKENS" \
          --save-every 5000 \
          --core-metric-every "$CORE_METRIC_EVERY" \
+         --resume-from-step "$RESUME_STEP" \
          --model-tag "$TAG_BASE" ) > "$LOG_DIR/stage1_pretrain.log" 2>&1
 }
 
