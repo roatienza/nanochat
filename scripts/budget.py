@@ -5,7 +5,7 @@ analytically and over-counted them by 2.1-2.6x (it assumed a value embedding on
 every layer; nanochat puts one on alternating layers only), and it modelled
 activations as width-proportional when the real driver is the vocab-sized logits
 tensor. Both errors are corrected here, and the memory column is now MEASURED
-rather than derived. See EXECUTION_LOG.md for the full audit.
+rather than derived. See docs/EXECUTION_LOG.md for the full audit.
 
 Reproduce the measurements with:
     nanochat/param_audit.py   # parameter counts, real GPT class on meta device

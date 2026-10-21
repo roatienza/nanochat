@@ -46,7 +46,7 @@ CORRECTED COMPARISON (no regression)
 DECISION
   Stage 5 (RL) starts from model_013630.pt (v3). No blend needed.
 
-  Detail: CORRECTION_2026-10-06_CHATCORE.md
+  Detail: docs/CORRECTION_2026-10-06_CHATCORE.md
 
 2026-10-03 11:20 PDT — Stage 2 v2 status + repo sync
 
@@ -433,7 +433,7 @@ hermes exact 0.0% -> 40.7% (22/54), fn accuracy 100.0%, mean pred calls
 hypothesis stays dead).  Residuals carried to Stage 5: ToolACE argument
 fidelity (78.6% fn).  ChatCORE did NOT regress: v3 0.1360 vs Stage 3 final
 **0.0272** (measured 2026-10-06; the "0.082" baseline was a d12 ablation run
-`9w53jmjw`, not Stage 3 final — see CORRECTION_2026-10-06_CHATCORE.md).
+`9w53jmjw`, not Stage 3 final — see docs/CORRECTION_2026-10-06_CHATCORE.md).
 GSM8K chatcore 0.0 (24 samples) is a real weakness, shared with v2, for RL.  Checkpoint hygiene: v3 clobbered v2's 5000/10000
 files in the d28b-v2 dir; v2's 15548 final intact.
   Detail: git show 4279619:STATUS_2026-10-06_STAGE4_V3_FINAL.md

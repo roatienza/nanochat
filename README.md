@@ -3,8 +3,22 @@
 Teaching plan: train one model end-to-end from language modeling to
 long-horizon agentic task completion, on a single **8 × A100 40 GB** node.
 
-Read **[PLAN.md](PLAN.md)** for the full curriculum, memory budgets, and stage
-timings.
+## Documentation
+
+The two main documents are the ones in the repository root:
+
+- **[README.md](README.md)** — this file: the plan in brief, the headline
+  numbers, and how to reproduce them.
+- **[PLAN.md](PLAN.md)** — the full curriculum, memory budgets, and stage
+  timings.
+
+Supporting evidence lives in `docs/`:
+
+- **[docs/EXECUTION_LOG.md](docs/EXECUTION_LOG.md)** — the dated, append-only
+  record of every stage: what was measured, what was decided, and why.
+- **[docs/CORRECTION_2026-10-06_CHATCORE.md](docs/CORRECTION_2026-10-06_CHATCORE.md)**
+  — the retraction of the "ChatCORE regression" claim (it was a phantom, from
+  comparing against a d12 ablation).
 
 ## TL;DR
 
@@ -33,8 +47,15 @@ Assumes 30% MFU, calibrated against SmolLM3's reported 14,000 tok/s/GPU on H100.
 ## Layout
 
 ```
-PLAN.md                     the curriculum
+README.md                   the plan in brief  (main doc)
+PLAN.md                     the curriculum     (main doc)
+docs/EXECUTION_LOG.md       dated evidence for every number
+docs/CORRECTION_*.md       retractions and corrections
 scripts/budget.py           memory + wall-clock calculator (reproduce the tables)
+scripts/launch_stage*.sh    stage launchers (5a warmup, 5 RL, 6 pilot, 6b curriculum)
+scripts/stage6_*.py         Stage 6 dry-run, sandbox smoke, offline eval
+scripts/probe_l3.py         level-3 capability probe
+logs/                       small evidence logs (<=10 KB) from the stage runs
 ```
 
 ## Reproduce the numbers
