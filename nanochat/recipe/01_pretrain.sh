@@ -55,6 +55,47 @@ log "    GPUs=$GPU_PRETRAIN  base dir=$NANOCHAT_BASE_DIR"
 NGPUS=$(awk -F, '{print NF}' <<< "$GPU_PRETRAIN")
 
 # ---------------------------------------------------------------------------
+# The device batch size: how many sequences ONE RANK holds at once.
+#
+# The TOTAL batch is 32,768 tokens and it must stay that way: base_train.py
+# scales the learning rate by sqrt(B / B_ref) on the TOTAL batch, so
+# changing the total batch would change the recipe. The device batch only
+# changes HOW the work is split between the ranks and the micro-steps.
+#
+# MEASURED on this node, real scripts.base_train, d28, 2k ctx:
+#
+#   world size 1, device batch 4    OK   15,413 tok/s  36.4% MFU
+#   world size 1, device batch 2    OK   17,608 tok/s  41.6% MFU
+#   world size 1, device batch 1    OK   14,286 tok/s  33.7% MFU
+#   world size 2, device batch 4    OOM  35.34 GiB
+#   world size 2, device batch 2    OOM  34.28 GiB
+#   world size 2, device batch 1    OOM  32.96 GiB
+#
+# Two things fall out of that table.
+#
+# 1. THE MEMORY DOES NOT DEPEND ON THE DEVICE BATCH. d28 reserves about
+#    35.5 GiB at every device batch, because the cost is the OPTIMIZER
+#    STATE, not the activations: 2.02 B parameters x (fp32 exp_avg +
+#    fp32 exp_avg_sq) = 15.0 GiB of moments, plus the bf16 weights
+#    (3.8 GiB) and the bf16 gradients (3.8 GiB), plus the reduce-scatter
+#    and all-gather buffers. The instrumented breakdown is in
+#    docs/ETA_2GPU.md.
+#
+#    So the 2-rank path cannot be made to fit by shrinking the device
+#    batch. At world size 2 each rank needs about 33-35 GiB, which means
+#    a card that is FREE (or nearly so) -- not one shared with another
+#    tenant's jobs.
+#
+# 2. Device batch 2 is the best throughput on one card (41.6% MFU vs
+#    36.4% at 4), because the logits block is the memory hot spot.
+#    The original 4-GPU run used 4, so the default stays 4 to keep the
+#    recipe identical; set PRETRAIN_DEVICE_BATCH to override it.
+# ---------------------------------------------------------------------------
+PRETRAIN_DEVICE_BATCH="${PRETRAIN_DEVICE_BATCH:-4}"
+log "    device batch=$PRETRAIN_DEVICE_BATCH (world size $NGPUS, total batch 32768)"
+check_gpu_memory "1 (pretrain)" "$GPU_PRETRAIN" "$PRETRAIN_MEM_NEEDED_MIB"
+
+# ---------------------------------------------------------------------------
 # Where would we resume from?
 #
 # base_train.py takes --resume-from-step N and loads
@@ -83,7 +124,7 @@ run_pretrain() {
          --run "utak-pretrain" \
          --depth 28 --aspect-ratio 64 --head-dim 128 \
          --max-seq-len 2048 --window-pattern SSSL \
-         --device-batch-size 4 --total-batch-size 32768 \
+         --device-batch-size "$PRETRAIN_DEVICE_BATCH" --total-batch-size 32768 \
          --embedding-lr 0.3 --unembedding-lr 0.008 \
          --matrix-lr 0.02 --scalar-lr 0.5 \
          --weight-decay 0.28 \

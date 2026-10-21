@@ -378,6 +378,49 @@ Set GPU_LONGC to a single card."
   fi
 }
 
+# ---------------------------------------------------------------------------
+# How much free memory does a card have, in MiB?
+# ---------------------------------------------------------------------------
+gpu_free_mib() {
+  local idx="$1" used total
+  used=$(nvidia-smi -i "$idx" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null)
+  total=$(nvidia-smi -i "$idx" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null)
+  if [ -z "$used" ] || [ -z "$total" ]; then echo 0; return; fi
+  echo $((total - used))
+}
+
+# ---------------------------------------------------------------------------
+# Warn if a card does not have enough room for the model.
+#
+# MEASURED on this node, d28, 2k ctx, real scripts.base_train:
+#
+#   world size 1   reserves ~35.5 GiB   (1 GPU, device batch 2: 35.68)
+#   world size 2   reserves ~33-35 GiB PER RANK
+#
+# The cost is the optimizer state, not the activations: 2.02 B parameters
+# x (fp32 exp_avg + fp32 exp_avg_sq) = 15.0 GiB of moments, plus the bf16
+# weights and gradients (3.8 GiB each), plus the reduce-scatter and
+# all-gather buffers. It does NOT scale down with the device batch --
+# measured at device batch 1, 2 and 4, the reserved total is the same.
+#
+# So a card shared with another tenant's jobs usually cannot hold d28,
+# no matter how small the device batch is.
+# ---------------------------------------------------------------------------
+PRETRAIN_MEM_NEEDED_MIB="${PRETRAIN_MEM_NEEDED_MIB:-37600}"
+
+check_gpu_memory() {
+  local stage="$1" gpus="$2" need="$3" g free
+  for g in ${gpus//,/ }; do
+    free=$(gpu_free_mib "$g")
+    if [ "$free" -lt "$need" ]; then
+      log "WARNING: stage $stage: GPU $g has $free MiB free but d28 needs about"
+      log "WARNING:   $need MiB. The run will probably OOM at the first optimizer"
+      log "WARNING:   step (the memory is optimizer state, not activations, so a"
+      log "WARNING:   smaller device batch will NOT help)."
+    fi
+  done
+}
+
 # How many GPUs does this stage get? STAGE_GPU is a comma-separated list.
 stage_gpu_count() {
   local g="${STAGE_GPU:-0}"
