@@ -26,7 +26,20 @@ VLLM_DIR="${VLLM_DIR:-$NANOCHAT_BASE_DIR/vllm_d28b}"
 VLLM_BIN="${VLLM_BIN:-$VLLM_DIR/venv-vllm/bin/vllm}"
 VLLM_PY="${VLLM_PY:-$VLLM_DIR/venv-vllm/bin/python}"
 PY="${PY:-$NANOCHAT_ROOT/.venv/bin/python}"
-[ -x "$PY" ] || PY="${PYTHON:-python3}"
+# The venv is not tracked (it is 6 GB of wheels). If it is missing, fall back
+# to $PYTHON, but FAIL LOUDLY if that interpreter has no torch -- a silent
+# fallthrough to a system python turns a 10-day run into an ImportError
+# 40 minutes in.
+if [ ! -x "$PY" ]; then
+  PY="${PYTHON:-python3}"
+  if ! "$PY" -c "import torch" >/dev/null 2>&1; then
+    printf '[FATAL] no usable python found.\n' >&2
+    printf '  Tried: %s/.venv/bin/python (missing) and %s (no torch).\n' "$NANOCHAT_ROOT" "$PY" >&2
+    printf '  Fix:  cd %s && uv venv && uv pip install -r pyproject.toml\n' "$NANOCHAT_ROOT" >&2
+    printf '  Or:   export PY=/path/to/python-with-torch\n' >&2
+    exit 1
+  fi
+fi
 
 # Where the packed model lands and where the guard/vLLM read it from.
 MODEL_DIR="${MODEL_DIR:-$VLLM_DIR/$MODEL_DIR_NAME}"
@@ -34,11 +47,44 @@ MODEL_DIR="${MODEL_DIR:-$VLLM_DIR/$MODEL_DIR_NAME}"
 # ---------------------------------------------------------------------------
 # GPUs. Every stage that needs a GPU pins one; the stages that do not (pack,
 # serve) inherit it.
+#
+# PROFILE: "multi" (default) or "1gpu". Set PROFILE=1gpu to run the whole
+# recipe on a single A100-40GB. It is a supported path, not a degraded one:
+#
+#   * MEASURED on this node, same d28 workload, 2k ctx, tbs 32,768:
+#       1 GPU  18,051 tok/s  MFU 42.62
+#       2 GPUs 34,880 tok/s  MFU 41.17
+#       4 GPUs 66,585 tok/s  MFU 39.30
+#     One GPU is ~97% as efficient PER TOKEN as four. 4 GPUs buy 3.69x
+#     throughput, so one GPU costs ~3.7x the wall clock, not 4x.
+#   * d28 fits one card: measured peak 34.86 GiB at device-batch 4
+#     (nanochat/mem_probe.py), against 40 GiB of card.
+#   * The optimizer shards by world_size. Going 4 -> 1 is handled by
+#     chat_sft.py:341 (rebuild full-size moments from the 4 saved shards,
+#     then re-shard to 1). Going 1 -> 4 is the same path in reverse.
+#   * LR does NOT depend on world size. base_train.py scales LR by
+#     sqrt(B/B_ref) on TOTAL batch size, and total_batch_size is a user
+#     argument that is unchanged by the GPU count. The batch is held
+#     constant across profiles, so a 1-GPU run is not a different recipe.
+#
+# 1-GPU wall clock for the full 16-stage recipe: ~249 h (~10.4 days),
+# or ~270 h (~11.3 days) with a 15% restart/IO contingency.
+# See docs/ETA_1GPU.md for the derivation.
 # ---------------------------------------------------------------------------
-GPU_PRETRAIN="${GPU_PRETRAIN:-4,5,6,7}"
-GPU_SFT="${GPU_SFT:-4}"
-GPU_LONGC="${GPU_LONGC:-5}"
-GPU_TOUCHUP="${GPU_TOUCHUP:-7}"
+PROFILE="${PROFILE:-multi}"
+if [ "$PROFILE" = "1gpu" ]; then
+  # One card for everything except the server. Pick a card that is FREE:
+  # a 40 GiB card already holding a vLLM server cannot also hold d28.
+  GPU_PRETRAIN="${GPU_PRETRAIN:-6}"
+  GPU_SFT="${GPU_SFT:-6}"
+  GPU_LONGC="${GPU_LONGC:-6}"
+  GPU_TOUCHUP="${GPU_TOUCHUP:-6}"
+else
+  GPU_PRETRAIN="${GPU_PRETRAIN:-4,5,6,7}"
+  GPU_SFT="${GPU_SFT:-4}"
+  GPU_LONGC="${GPU_LONGC:-5}"
+  GPU_TOUCHUP="${GPU_TOUCHUP:-7}"
+fi
 GPU_SERVE="${GPU_SERVE:-0}"
 
 # ---------------------------------------------------------------------------
@@ -193,11 +239,18 @@ die() { printf '[utak][%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 # Run a module from the nanochat checkout with the base dir exported.
 # The perf env vars (OMP_NUM_THREADS, PYTORCH_ALLOC_CONF, NCCL_*) are
 # exported by this file, so every stage inherits them automatically.
+#
+# STAGE_GPU: the GPU(s) this stage runs on. Every stage script sets it
+# before calling run_mod, because a stage that does not pin its device
+# lands on GPU 0 -- which is where the vLLM server lives (37.4 GiB of
+# 40 GiB) and where a training run OOMs. A single-GPU profile is
+# therefore a first-class path, not an accident.
 run_mod() {
   local logfile="$1"; shift
-  log "RUN: $*  (log: $logfile)"
+  log "RUN: $*  (log: $logfile, gpu: ${STAGE_GPU:-unset})"
   ( cd "$NANOCHAT_ROOT" \
     && NANOCHAT_BASE_DIR="$NANOCHAT_BASE_DIR" \
+       CUDA_VISIBLE_DEVICES="${STAGE_GPU:-0}" \
        PYTHONPATH="$NANOCHAT_ROOT:${PYTHONPATH:-}" \
        "$PY" -m "$@" ) > "$logfile" 2>&1
   local rc=$?

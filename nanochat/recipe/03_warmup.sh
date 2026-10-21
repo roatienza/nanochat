@@ -21,6 +21,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 . ./recipe/config.sh
 
 log "=== Stage 3: GSM8K warmup SFT -> $TAG_WARMUP ==="
+STAGE_GPU="${GPU_SFT}"
 log "    source: sft/$TAG_SFT_TOOLS @ 13630"
 
 # chat_sft.py reads base_checkpoints/<model-tag>. The warmup's input is the

@@ -22,6 +22,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 . ./recipe/config.sh
 
 log "=== Stage 7: long-context extension -> $TAG_LONGC -> $TAG_LONGC_FINAL ==="
+STAGE_GPU="${GPU_LONGC}"
 log "    source: rl/$TAG_RL @ step 177  ->  131072 ctx"
 
 # ---- 7a: the main long-context pass -------------------------------------

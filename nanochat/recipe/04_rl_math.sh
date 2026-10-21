@@ -30,6 +30,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 . ./recipe/config.sh
 
 log "=== Stage 4: math RL (GSM8K) -> $TAG_RL_WARMUP ==="
+STAGE_GPU="${GPU_SFT}"
 log "    source: sft/$TAG_WARMUP @ 509"
 
 if [ ! -d "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL_WARMUP" ]; then

@@ -39,6 +39,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 . ./recipe/config.sh
 
 log "=== Stage 6: curriculum RL -> $TAG_RL @ 177 ==="
+STAGE_GPU="${GPU_SFT}"
 log "    source: rl/$TAG_RL_PILOT @ 177"
 
 # The curriculum run continues from the pilot's final checkpoint. It reads

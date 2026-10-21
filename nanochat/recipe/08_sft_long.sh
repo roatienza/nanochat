@@ -33,6 +33,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 . ./recipe/config.sh
 
 log "=== Stage 8: long-context SFT -> $TAG_SFT ==="
+STAGE_GPU="${GPU_LONGC}"
 log "    source: base/$TAG_LONGC_FINAL @ 250"
 
 # --- the first 100 iterations --------------------------------------------

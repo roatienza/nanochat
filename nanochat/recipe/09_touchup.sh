@@ -36,6 +36,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 . ./recipe/config.sh
 
 log "=== Stage 9: touch-up ladder -> $TAG_TOUCH_B ==="
+STAGE_GPU="${GPU_TOUCHUP}"
 
 # ---------------------------------------------------------------------------
 # 9a: tool follow-up. Teaches the model to continue after a tool result.

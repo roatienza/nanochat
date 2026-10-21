@@ -24,6 +24,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 . ./recipe/config.sh
 
 log "=== Stage 5: agentic RL -> $TAG_RL_PILOT ==="
+STAGE_GPU="${GPU_SFT}"
 log "    source: rl/$TAG_RL_WARMUP @ 100"
 
 # The pilot's base is the math-RL checkpoint. chat_rl_agentic.py reads
