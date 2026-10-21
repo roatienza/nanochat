@@ -188,6 +188,15 @@ case "$PROFILE" in
     die "unknown PROFILE '$PROFILE' (want: multi, 2gpu, 1gpu)"
     ;;
 esac
+# The card the SERVED model runs on. It must NOT be one of the training
+# cards: vLLM takes 94% of the card it is given (--gpu-memory-utilization
+# 0.94), so it cannot share with a training process.
+#
+# In the default profile the training uses 4,5,6,7 and the server uses 0.
+# Under PROFILE=2gpu the training uses two cards and the server needs a
+# third; by the time stage 11 runs, the training has finished and its
+# cards are free again, so the server can take one of them. Stage 11
+# picks the first GPU that is not currently busy, preferring GPU 0.
 GPU_SERVE="${GPU_SERVE:-0}"
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,42 @@ log "    public :$PUBLIC_PORT (guard)  ->  internal :$UPSTREAM_PORT (vLLM)"
 [ -d "$MODEL_DIR" ] || die "model dir not found: $MODEL_DIR (run 10_pack.sh first)"
 [ -x "$VLLM_BIN" ] || die "vllm binary not found: $VLLM_BIN"
 
+# ---------------------------------------------------------------------------
+# Pick the card to serve on.
+#
+# vLLM takes 94% of whatever card it is given, so it cannot share with a
+# training process. By the time this stage runs, the training has finished
+# and its cards are free -- but the OTHER tenant on this node may have
+# taken one of them in the meantime.
+#
+# So: use GPU_SERVE if it is free, otherwise fall back to the first card
+# with no compute process on it. Fail loudly if there is none.
+# ---------------------------------------------------------------------------
+gpu_is_free() {
+  local idx="$1" pid owner
+  for pid in $(nvidia-smi -i "$idx" --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do
+    [ -z "$pid" ] && continue
+    owner=$(stat -c %U "/proc/$pid" 2>/dev/null) || owner="?"
+    [ "$owner" = "rowel" ] || return 1
+  done
+  return 0
+}
+
+if gpu_is_free "$GPU_SERVE"; then
+  log "    serving on GPU $GPU_SERVE (free)"
+else
+  for g in 0 1 2 3 4 5 6 7; do
+    if gpu_is_free "$g"; then
+      log "    GPU $GPU_SERVE is busy -- serving on GPU $g instead (free)"
+      GPU_SERVE="$g"
+      break
+    fi
+  done
+  if ! gpu_is_free "$GPU_SERVE"; then
+    die "no free GPU to serve on: every card has a process on it"
+  fi
+fi
+
 # Free the ports if a previous instance is holding them.
 for port in $PUBLIC_PORT $UPSTREAM_PORT; do
   pids=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u)
