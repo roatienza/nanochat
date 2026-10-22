@@ -6,13 +6,20 @@
 
 | profile | wall clock | days | basis |
 |---|---|---|---|
-| **1 GPU** | **203 h** | **8.5** | 3 of 9 training stages measured directly on one GPU; the rest scaled from a measured 1→4 GPU pair. The RL stages were re-measured on 2026-10-22 with the larger generation batch |
-| 1 GPU + 15% contingency | 234 h | 9.7 | restarts, checkpoint I/O, eval drift |
-| 2 GPUs | 106 h | 4.4 | **measured to fit** on 2026-10-22 (see ETA_2GPU.md) |
+| **1 GPU** | **207.9 h** | **8.7** | 3 of 9 training stages measured directly on one GPU; the rest scaled from a measured 1→4 GPU pair. The RL stages were re-measured on 2026-10-22 with the larger generation batch |
+| 1 GPU + 15% contingency | 239.1 h | 10.0 | restarts, checkpoint I/O, eval drift |
+| 2 GPUs | 117.2 h | 4.9 | **measured to fit** on 2026-10-22, and stage 1 now running at that speed (see ETA_2GPU.md) |
 | 4 GPUs (how it was actually built) | ~75 h | 3.1 | pretrain 34.2 h + the rest |
 
 **If training starts today (2026-10-21) on one free GPU, `utak` is served at about
-2026-11-01 12:00 PDT**, or 2026-11-02 midday with contingency.
+2026-10-30 08:00 PDT**, or 2026-10-31 midday with contingency.
+
+**The TOTAL rows below are the sum of the stage rows.** They were wrong in
+the first version of this file (it said 203.1 h for 1 GPU and 106.0 h for
+2 GPUs, neither of which equalled its own rows) and
+[`ETA_2GPU.md`](ETA_2GPU.md) still carried the pre-RL-fix numbers
+(249 h / 136 h). Both documents now agree, and both are the sum of the
+rows below.
 
 ## The one measurement everything else rests on
 
@@ -78,16 +85,16 @@ within 2 %, from independent routes.
 | 6 | curriculum RL, 178 steps | **~9.6 h** | ~4.9 h | **MEASURED 1 GPU** 2026-10-22, same 5.4x factor; the old 24.0 h was at generation batch 2 |
 | 7 | context extension 2k → 128k | **12.9 h** | 12.9 h | **MEASURED 1 GPU** (ckpt meta, `dbs=1`) |
 | 8 | 128k SFT, 800 steps | **5.1 h** | 5.1 h | **MEASURED 1 GPU** (ckpt meta `d28b-128k-sft-v5`) |
-| 9 | touch-up ladder, 840 steps, 6 sub-stages | **6.8 h** | 3.4 h | **MEASURED 1 GPU** (ckpt meta v5b…v6j) |
+| 9 | touch-up ladder, 840 steps, 6 sub-stages | **6.8 h** | 6.8 h | **MEASURED 1 GPU** (ckpt meta v5b…v6j); also 1 GPU only by design (see the gradient-sync section) |
 | 10 | pack → vLLM dir | 0.3 h | 0.3 h | measured |
 | 11 | serve (vLLM + guard) | 0.2 h | 0.2 h | measured |
 | 12 | gates | 0.5 h | 0.5 h | measured |
 | 13 | e2e acceptance | 0.3 h | 0.3 h | measured |
 | 14 | regression tests | 0.2 h | 0.2 h | measured |
 | 15 | scrub test | 0.2 h | 0.2 h | measured |
-| | **TOTAL** | **203.1 h** | **106.0 h** | |
-| | **in days** | **8.5** | **4.4** | |
-| | **+ 15 % contingency** | **9.7 d** | **5.1 d** | |
+| | **TOTAL** | **207.9 h** | **117.6 h** | |
+| | **in days** | **8.7** | **4.9** | |
+| | **+ 15 % contingency** | **10.0 d** | **5.6 d** | |
 
 ## The generation batch: the biggest single win of the review
 
@@ -160,7 +167,7 @@ Two GPUs halve the pretrain (145 h → 73 h) and the SFT stages, but:
 - the 30 % of the schedule that is evaluation, checkpoint I/O and process
   startup does not scale at all.
 
-136 h vs 249 h is a 1.8× speed-up for 2× the hardware, and it costs a second
+117.6 h vs 207.9 h is a 1.77× speed-up for 2× the hardware, and it costs a second
 card that another tenant on this node is already using.
 
 ## What the recipe needed to support this

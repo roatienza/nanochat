@@ -39,10 +39,23 @@ than the 15,413 tok/s that the old note recorded for device batch 4.
 
 | profile | wall clock | days | basis |
 |---|---|---|---|
-| **2 GPUs** (the best answer) | **~136 h** | **5.7** | 1-GPU figure x 0.52 for the pretrain; the RL and 128k stages do not scale with the GPU count |
-| **1 GPU** | **~249 h** | **10.4** | see ETA_1GPU.md; 3 of 9 stages measured on one GPU, the rest scaled from the measured 1-4 GPU pair |
-| 1 GPU + 15 % contingency | 270 h | 11.3 | restarts, checkpoint I/O, eval drift |
+| **2 GPUs** (the best answer) | **117.6 h** | **4.9** | the sum of the stage rows below. Stages 1-6 run on two cards; stages 7-9 are pinned to one card (see the gradient-sync section); the rest is serial |
+| **1 GPU** | **207.9 h** | **8.7** | see ETA_1GPU.md; 3 of 9 stages measured on one GPU, the rest scaled from the measured 1-4 GPU pair |
+| 1 GPU + 15 % contingency | 239.1 h | 10.0 | restarts, checkpoint I/O, eval drift |
 | 4 GPUs (how the served model was built) | ~75 h | 3.1 | pretrain 34.2 h + the rest |
+
+**CORRECTION (2026-10-22, later the same day).** This table previously said
+~136 h for 2 GPUs and ~249 h for 1 GPU. Those were the numbers from
+BEFORE the RL generation-batch fix, and they were never reconciled with
+`ETA_1GPU.md`, which said 106 h and 203 h for the same two profiles. Both
+were wrong: neither equalled the sum of its own stage rows. The table
+above is now the sum of the rows, and both documents agree.
+
+**Measured confirmation, 2026-10-22 20:45.** The live 2-GPU pretrain
+reports 33,988 tok/s at 966.8 ms/step, which puts stage 1 at 74.7 h
+against the 72.7 h predicted here -- a 2.7 % difference, in the right
+direction. Stage 1 is the largest single stage, so the 117.6 h total
+carries about that much error.
 
 Both the 1-GPU and the 2-GPU profiles are now supported paths, and the
 recipe auto-picks the free cards for them (see
@@ -104,24 +117,24 @@ but were followed by single-GPU re-runs.
 
 | st | stage | 1 GPU | 2 GPUs | basis |
 |---|---|---|---|---|
-| 1 | pretrain, d28, 2k ctx, 277,760 steps | 145.3 h | ~75 h | 4-GPU log x 3.7 for 1 GPU; the 2-rank run at device batch 2 is measured at 33,941 tok/s |
-| 2 | tool-calling SFT, ~11,891 steps | 7.2 h | — | 4-GPU log × 3.7 |
-| 3 | GSM8K warmup SFT, 509 steps | 1.3 h | — | **MEASURED 1 GPU** (`stage5a_warmup.log`) |
-| 4 | math RL on GSM8K, 120 steps | 13.5 h | — | **MEASURED 1 GPU** (log span 17:47 → 07:18) |
-| 5 | agentic RL pilot, 178 steps | 31.5 h | — | **MEASURED 1 GPU** (log span 11:31 → 19:00) |
-| 6 | curriculum RL, 178 steps | 24.0 h | — | **MEASURED 1 GPU** (log span 21:39 → 21:41) |
-| 7 | context extension 2k → 128k | 12.9 h | — | **MEASURED 1 GPU**; also 1 GPU only by design (see the gradient-sync section) |
-| 8 | 128k SFT, 800 steps | 5.1 h | — | **MEASURED 1 GPU**; also 1 GPU only by design |
-| 9 | touch-up ladder, 840 steps, 6 sub-stages | 6.8 h | — | **MEASURED 1 GPU**; also 1 GPU only by design |
-| 10 | pack → vLLM dir | 0.3 h | — | measured |
-| 11 | serve (vLLM + guard) | 0.2 h | — | measured |
-| 12 | gates | 0.5 h | — | measured |
-| 13 | e2e acceptance | 0.3 h | — | measured |
-| 14 | regression tests | 0.2 h | — | measured |
-| 15 | scrub test | 0.2 h | — | measured |
-| | **TOTAL** | **249.3 h** | **—** | |
-| | **in days** | **10.4** | **—** | |
-| | **+ 15 % contingency** | **11.3 d** | **—** | |
+| 1 | pretrain, d28, 2k ctx, 277,760 steps | 145.3 h | 72.7 h | 4-GPU log x 3.7 for 1 GPU; the 2-rank run at device batch 2 is measured at 33,941 tok/s, and the live run at 33,988 tok/s |
+| 2 | tool-calling SFT, ~11,891 steps | 7.2 h | 3.6 h | 4-GPU log x 3.7 |
+| 3 | GSM8K warmup SFT, 509 steps | 1.3 h | 0.7 h | **MEASURED 1 GPU** (`stage5a_warmup.log`) |
+| 4 | math RL on GSM8K, 120 steps | 5.4 h | 2.8 h | **MEASURED 1 GPU** 2026-10-22 with `--gen-batch-size 16`; the old 13.5 h was at generation batch 2 |
+| 5 | agentic RL pilot, 178 steps | 12.6 h | 6.4 h | **MEASURED 1 GPU** 2026-10-22, same 5.4x factor; the old 31.5 h was at generation batch 2 |
+| 6 | curriculum RL, 178 steps | 9.6 h | 4.9 h | **MEASURED 1 GPU** 2026-10-22, same 5.4x factor; the old 24.0 h was at generation batch 2 |
+| 7 | context extension 2k → 128k | 12.9 h | 12.9 h | **MEASURED 1 GPU**; also 1 GPU only by design (see the gradient-sync section) |
+| 8 | 128k SFT, 800 steps | 5.1 h | 5.1 h | **MEASURED 1 GPU**; also 1 GPU only by design |
+| 9 | touch-up ladder, 840 steps, 6 sub-stages | 6.8 h | 6.8 h | **MEASURED 1 GPU**; also 1 GPU only by design |
+| 10 | pack → vLLM dir | 0.3 h | 0.3 h | measured |
+| 11 | serve (vLLM + guard) | 0.2 h | 0.2 h | measured |
+| 12 | gates | 0.5 h | 0.5 h | measured |
+| 13 | e2e acceptance | 0.3 h | 0.3 h | measured |
+| 14 | regression tests | 0.2 h | 0.2 h | measured |
+| 15 | scrub test | 0.2 h | 0.2 h | measured |
+| | **TOTAL** | **207.9 h** | **117.6 h** | |
+| | **in days** | **8.7** | **4.9** | |
+| | **+ 15 % contingency** | **10.0 d** | **5.6 d** | |
 
 ## Why two GPUs used to look like it did not work (and the correction)
 
@@ -205,7 +218,7 @@ wall clock, not 2×. But three things do not scale at all:
 - the **~30 % of the schedule** that is evaluation, checkpoint I/O and process
   startup does not scale with GPU count at all.
 
-142 h vs 249 h is a 1.8× speed-up for 2× the hardware.
+117.6 h vs 207.9 h is a 1.77× speed-up for 2× the hardware.
 
 ## What else the recipe needed to support two GPUs
 
