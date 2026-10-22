@@ -309,6 +309,44 @@ PUBLIC_PORT="${PUBLIC_PORT:-8000}"
 UPSTREAM_PORT="${UPSTREAM_PORT:-8010}"
 
 # ---------------------------------------------------------------------------
+# THE TOKEN BUDGET.
+#
+# --target-param-data-ratio 8.0 is KEPT, and the schedule is not extended
+# to Chinchilla's 20. The reason is the repo's own scaling laws, recorded
+# in nanochat/dev/LOG.md over ~320 experiments:
+#
+#   * line 542: the optimal tokens:params ratio for THIS architecture is
+#     ~10.5 in the Kaplan style (the most consistent of the three
+#     parameter conventions, and the one that gives stable ~0.5
+#     exponents for both params and tokens). The Chinchilla-style ratio
+#     for the same architecture is 3.0-4.0, because the architecture is
+#     parameter-bloated: "only about a quarter of parameters are now
+#     weight projections and the vast majority is embedding tables".
+#
+#   * line 621: with the value embeddings in place the ratio "has HALVED
+#     FROM 8 TO 4", and "any attempt to reduce the capacity of value
+#     embeddings (param sharing, low rank, projections) fail. The model
+#     wants many of them, and with all the capacity".
+#
+# Chinchilla's 20 is a different architecture's number and does not
+# transfer here. Going from 8.0 to 20.0 would be 2.5x the tokens
+# (694,401 steps, 186 h of pretrain on two GPUs) for a budget the repo's
+# own sweeps argue is already past the optimum.
+#
+# What the corpus expansion DOES buy is the other half of the problem.
+# The original run had 170 train shards: ~7.9 G trainable tokens for
+# 9.10 G of training, i.e. ~1.15 epochs, so roughly 15% of the data was
+# seen twice. With 500 train shards (~23.0 G trainable) the same 9.10 G
+# budget is 0.40 epochs -- the same tokens, seen once instead of a
+# seventh time. That is a real quality gain for the same wall clock, and
+# it costs only disk (43 GB, ~11 min to download at 67.4 MB/s).
+#
+# Whether a longer run would help is a MEASUREMENT, not a guess: the
+# recipe evaluates every 1,000 steps, so the shape of the val bpb curve
+# in the log answers it.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Checkpoint tags. These are the names the stages read and write.
 # ---------------------------------------------------------------------------
 TAG_BASE="${TAG_BASE:-utak-base}"                      # stage 1 output

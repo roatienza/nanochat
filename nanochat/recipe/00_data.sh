@@ -15,10 +15,11 @@
 #     (shard_06542) as the validation set and uses everything else for
 #     training.
 #
-#     The shard count is not a free parameter. The pretrain schedule is
-#     derived from --target-param-data-ratio 8.0 against the data that is
-#     actually present, so changing the shard count changes the number of
-#     iterations and therefore the compute budget.
+#     The shard count does NOT change the compute budget: the pretrain
+#     schedule is derived from --target-param-data-ratio against the
+#     MODEL's parameter count, not against the size of the corpus. It only
+#     changes how many times the data is repeated. 500 shards means the
+#     9.10 G token budget is 0.40 epochs -- no repetition at all.
 #
 # 0c. THE TASK CORPORA. The SFT and RL stages pull their datasets from
 #     the base directory too: GSM8K, MMLU, ARC, HumanEval and SmolTalk.
@@ -28,7 +29,22 @@ set -u
 cd "$(dirname "$(readlink -f "$0")")/.."
 . ./recipe/config.sh
 
-CORPUS_SHARDS="${CORPUS_SHARDS:-170}"
+# 500 train shards, not the original 170.
+#
+# The original run had 171 files (170 train + the validation shard):
+# ~12.1 G source tokens, ~7.9 G trainable after the 35% best-fit
+# cropping loss, and it trained on 9.10 G tokens -- about 1.15 epochs,
+# so roughly 15% of the data was seen twice. The checkpoint metadata
+# agrees (epoch 2, pq_idx 30).
+#
+# 500 train shards is ~35.3 G source tokens, ~23.0 G trainable. At the
+# same 9.10 G token budget that is 0.40 epochs: the same tokens, seen
+# once instead of a seventh time. That is a real quality gain for the
+# same wall clock, and it costs only disk.
+#
+# The download is resumable (it skips files that exist) and takes about
+# 11 minutes at the measured 67.4 MB/s with 8 workers.
+CORPUS_SHARDS="${CORPUS_SHARDS:-500}"
 TOKENIZER_MAX_CHARS="${TOKENIZER_MAX_CHARS:-2000000000}"
 TOKENIZER_VOCAB="${TOKENIZER_VOCAB:-32768}"
 TOKENIZER_DOC_CAP="${TOKENIZER_DOC_CAP:-10000}"
