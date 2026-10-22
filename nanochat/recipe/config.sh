@@ -369,6 +369,29 @@ FINAL_TAG="${FINAL_TAG:-$TAG_TOUCH_C}"
 FINAL_STEP="${FINAL_STEP:-240}"
 
 # ---------------------------------------------------------------------------
+# The step each stage must REACH for the next stage to be able to read it.
+#
+# This is the stage contract, the same one tests/test_stage_contract.py
+# checks. It lives here, next to the tags, because the resume logic needs
+# it: a stage is only finished when its FINAL checkpoint exists, not when
+# any checkpoint exists. Stage 1 saves every 5,000 steps, so "any
+# checkpoint" would call a pretrain that died at step 27,299 "done" and
+# the restart would skip straight to stage 2, which then fails for ever
+# on a missing model_277760.pt.
+#
+# The SFT and RL stages stop on DATASET EXHAUSTION, so their step counts
+# follow from the recipe and are the same on 1, 2 and 4 GPUs.
+# ---------------------------------------------------------------------------
+TAG_BASE_FINAL_STEP="${TAG_BASE_FINAL_STEP:-277760}"    # stage 1 -> stage 2
+TAG_SFT_TOOLS_FINAL_STEP="${TAG_SFT_TOOLS_FINAL_STEP:-13630}"  # stage 2 -> stage 3
+TAG_WARMUP_FINAL_STEP="${TAG_WARMUP_FINAL_STEP:-509}"   # stage 3 -> stage 4
+TAG_RL_WARMUP_FINAL_STEP="${TAG_RL_WARMUP_FINAL_STEP:-100}"    # stage 4 -> stage 5
+TAG_RL_PILOT_FINAL_STEP="${TAG_RL_PILOT_FINAL_STEP:-177}"      # stage 5 -> stage 6
+TAG_RL_FINAL_STEP="${TAG_RL_FINAL_STEP:-177}"          # stage 6 -> stage 7
+TAG_LONGC_FINAL_STEP="${TAG_LONGC_FINAL_STEP:-250}"    # stage 7b -> stage 8
+TAG_SFT_FINAL_STEP="${TAG_SFT_FINAL_STEP:-800}"        # stage 8 -> stage 9
+
+# ---------------------------------------------------------------------------
 # Performance.
 #
 # These are the knobs that decide how fast the pipeline runs. They are here,
