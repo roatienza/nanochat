@@ -62,36 +62,57 @@ NGPUS=$(awk -F, '{print NF}' <<< "$GPU_PRETRAIN")
 # changing the total batch would change the recipe. The device batch only
 # changes HOW the work is split between the ranks and the micro-steps.
 #
-# MEASURED on this node, real scripts.base_train, d28, 2k ctx:
+# MEASURED on this node, real scripts.base_train, d28, 2k ctx, tbs 32,768
+# (2026-10-22, fresh process per measurement, A100-SXM4-40GB):
 #
-#   world size 1, device batch 4    OK   15,413 tok/s  36.4% MFU
-#   world size 1, device batch 2    OK   17,608 tok/s  41.6% MFU
-#   world size 1, device batch 1    OK   14,286 tok/s  33.7% MFU
-#   world size 2, device batch 4    OOM  35.34 GiB
-#   world size 2, device batch 2    OOM  34.28 GiB
-#   world size 2, device batch 1    OOM  32.96 GiB
+#   world size 1, device batch 2    OK   1,868 ms  17,525 tok/s  41.4% MFU
+#                                       peak 32,050 MiB
+#   world size 1, device batch 3    OOM
+#   world size 1, device batch 4    OOM  39.30 GiB in use, 201 MiB free
+#   world size 2, device batch 2    OK     964 ms  33,941 tok/s  40.1% MFU
+#                                       peak 37,378 MiB PER RANK
+#   world size 2, device batch 4    OOM  39.49 GiB in use, 21 MiB free
 #
 # Two things fall out of that table.
 #
-# 1. THE MEMORY DOES NOT DEPEND ON THE DEVICE BATCH. d28 reserves about
-#    35.5 GiB at every device batch, because the cost is the OPTIMIZER
-#    STATE, not the activations: 2.02 B parameters x (fp32 exp_avg +
-#    fp32 exp_avg_sq) = 15.0 GiB of moments, plus the bf16 weights
-#    (3.8 GiB) and the bf16 gradients (3.8 GiB), plus the reduce-scatter
-#    and all-gather buffers. The instrumented breakdown is in
-#    docs/ETA_2GPU.md.
+# 1. DEVICE BATCH 4 DOES NOT FIT ON ONE 40 GiB CARD. The old version of
+#    this comment claimed "world size 1, device batch 4 OK 15,413 tok/s";
+#    that is wrong, and the default was set to 4 anyway. The run died with
+#    "CUDA out of memory. Tried to allocate 686.00 MiB ... 201.88 MiB is
+#    free" on 2026-10-21. The default is now 2, which is the only value
+#    that fits on one card -- and it is ALSO 13.7% FASTER than the 4
+#    (17,525 vs 15,413 tok/s), so the old default was both broken and
+#    slower.
 #
-#    So the 2-rank path cannot be made to fit by shrinking the device
-#    batch. At world size 2 each rank needs about 33-35 GiB, which means
-#    a card that is FREE (or nearly so) -- not one shared with another
-#    tenant's jobs.
+#    Why the memory works out this way: the cost is the OPTIMIZER STATE,
+#    not the activations. 2.02 B parameters x (fp32 exp_avg + fp32
+#    exp_avg_sq) = 15.0 GiB of moments, plus bf16 weights 3.76 GiB and
+#    bf16 gradients 3.76 GiB = 22.5 GiB of state that at world size 1 is
+#    entirely unsharded. The activations are the small part, which is why
+#    a smaller device batch does not buy back enough to fit.
 #
-# 2. Device batch 2 is the best throughput on one card (41.6% MFU vs
-#    36.4% at 4), because the logits block is the memory hot spot.
-#    The original 4-GPU run used 4, so the default stays 4 to keep the
-#    recipe identical; set PRETRAIN_DEVICE_BATCH to override it.
-# ---------------------------------------------------------------------------
-PRETRAIN_DEVICE_BATCH="${PRETRAIN_DEVICE_BATCH:-4}"
+# 2. TWO GPUs DO FIT, at device batch 2, and they are worth 1.94x. This
+#    overturns the earlier "2 GPUs is impossible" conclusion (commit
+#    0d4aafd), which compared the UNSHARDED 35.34 GiB against a two-rank
+#    run. The optimizer state is ZeRO-2 SHARDED, so at world size 2 each
+#    rank holds 15.0/2 = 7.5 GiB of moments instead of 15.0 GiB.
+#
+# The TOTAL batch stays 32,768 tokens: base_train.py scales the learning
+# rate by sqrt(B / B_ref) on the TOTAL batch, so changing the total batch
+# would change the recipe. The device batch only changes how the work is
+# split between the ranks and the micro-steps.
+#
+# On 4 GPUs the original run used device batch 4 and worked, because the
+# optimizer state is sharded 4 ways (3.75 GiB of moments per rank). Keep 4
+# there so the multi-GPU profile reproduces the original recipe exactly.
+# -----------------------------------------------------------------------
+if [ "${PRETRAIN_DEVICE_BATCH:-}" = "" ]; then
+  if [ "$NGPUS" -ge 4 ]; then
+    PRETRAIN_DEVICE_BATCH=4
+  else
+    PRETRAIN_DEVICE_BATCH=2
+  fi
+fi
 log "    device batch=$PRETRAIN_DEVICE_BATCH (world size $NGPUS, total batch 32768)"
 check_gpu_memory "1 (pretrain)" "$GPU_PRETRAIN" "$PRETRAIN_MEM_NEEDED_MIB"
 

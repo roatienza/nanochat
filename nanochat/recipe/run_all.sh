@@ -57,7 +57,18 @@ run_stage() {
   local n="$1"; shift
   should_run "$n" || { log "skip stage $n"; return 0; }
   log "########## STAGE $n ##########"
-  "$@"
+  if ! "$@"; then
+    # A stage that fails MUST stop the pipeline. Without this, a failure in
+    # stage 1 makes stages 2..N run against checkpoints that were never
+    # produced, and they all die on a missing file in seconds -- which is
+    # exactly what happened to the 2026-10-21 21:25 launch: stage 1 OOMed
+    # on the device batch, then stages 2-8 "ran" and failed in 5 minutes,
+    # and the log looked like 8 stages had been attempted.
+    log "FATAL: stage $n failed. Stopping the pipeline."
+    log "       The stages after it depend on its output, so running them"
+    log "       would only produce confusing downstream errors."
+    exit 1
+  fi
 }
 
 run_stage 0  bash "$NANOCHAT_ROOT/recipe/00_data.sh"

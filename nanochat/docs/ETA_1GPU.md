@@ -6,9 +6,9 @@
 
 | profile | wall clock | days | basis |
 |---|---|---|---|
-| **1 GPU** | **249 h** | **10.4** | 3 of 9 training stages measured directly on one GPU; the rest scaled from a measured 1↔4 GPU pair |
-| 1 GPU + 15% contingency | 270 h | 11.3 | restarts, checkpoint I/O, eval drift |
-| 2 GPUs | 136 h | 5.7 | for reference |
+| **1 GPU** | **203 h** | **8.5** | 3 of 9 training stages measured directly on one GPU; the rest scaled from a measured 1→4 GPU pair. The RL stages were re-measured on 2026-10-22 with the larger generation batch |
+| 1 GPU + 15% contingency | 234 h | 9.7 | restarts, checkpoint I/O, eval drift |
+| 2 GPUs | 106 h | 4.4 | **measured to fit** on 2026-10-22 (see ETA_2GPU.md) |
 | 4 GPUs (how it was actually built) | ~75 h | 3.1 | pretrain 34.2 h + the rest |
 
 **If training starts today (2026-10-21) on one free GPU, `utak` is served at about
@@ -38,10 +38,23 @@ within 2 %, from independent routes.
 
 ## Why one GPU is a supported profile, not a compromise
 
-- **Memory.** d28 at device-batch 4 peaks at **34.86 GiB** (measured,
-  `nanochat/mem_probe.py`, real `GPT` + real `MuonAdamW`) against 40 GiB of card.
-  Weights 3.76 GiB (bf16) + grads 7.52 GiB (fp32) + optimizer 7.74 GiB
-  = 19.0 GiB, leaving 5.1 GiB for activations.
+- **Memory.** d28 peaks at **32,050 MiB at device batch 2** (measured
+  2026-10-22 with the real `scripts.base_train` on one A100-40GB) against
+  40,960 MiB of card. At device batch 4 it **OOMs**: "39.30 GiB in use,
+  201.88 MiB free". The recipe's default is now 2.
+  The cost is the optimizer state, not the activations: 2.02 B parameters x
+  (fp32 `exp_avg` + fp32 `exp_avg_sq`) = 15.0 GiB of moments, plus bf16
+  weights 3.76 GiB and bf16 gradients 3.76 GiB = 22.5 GiB of state that at
+  world size 1 is entirely unsharded. A smaller device batch cannot buy
+  back enough to fit, which is why device batch 2 is the floor, not 1.
+  Measured on 2026-10-22, one A100-40GB, real trainer, d28, 2k ctx,
+  tbs 32,768, fresh process per measurement:
+
+  | device batch | result | tok/s | MFU | peak |
+  |---|---|---|---|---|
+  | 2 | **OK** | 17,525 | 41.4 % | 32,050 MiB |
+  | 3 | OOM | - | - | - |
+  | 4 | OOM | - | - | 39.30 GiB used, 201 MiB free |
 - **Optimizer state.** Sharded by world size. Moving 4 → 1 is handled by
   `chat_sft.py:341`, which rebuilds full-size moments from the 4 saved shards
   and re-shards to 1. The historical 1-GPU runs (stages 3-9) all used it.
@@ -60,9 +73,9 @@ within 2 %, from independent routes.
 | 1 | pretrain, d28, 2k ctx, 277,760 steps | **145.3 h** | 72.7 h | 4-GPU log × 3.7; train 140 h + eval 5.1 h |
 | 2 | tool-calling SFT, ~11,891 steps | **7.2 h** | 3.6 h | 4-GPU log × 3.7 |
 | 3 | GSM8K warmup SFT, 509 steps | **1.3 h** | 0.7 h | **MEASURED 1 GPU** (`stage5a_warmup.log`) |
-| 4 | math RL on GSM8K, 120 steps | **13.5 h** | 7.0 h | **MEASURED 1 GPU** (log span 17:47 → 07:18) |
-| 5 | agentic RL pilot, 178 steps | **31.5 h** | 16.0 h | **MEASURED 1 GPU** (log span 11:31 → 19:00) |
-| 6 | curriculum RL, 178 steps | **24.0 h** | 12.5 h | **MEASURED 1 GPU** (log span 21:39 → 21:41) |
+| 4 | math RL on GSM8K, 120 steps | **~5.4 h** | ~2.8 h | **MEASURED 1 GPU** 2026-10-22 with `--gen-batch-size 16`; the old 13.5 h was at generation batch 2 |
+| 5 | agentic RL pilot, 178 steps | **~12.6 h** | ~6.4 h | **MEASURED 1 GPU** 2026-10-22, same 5.4x factor; the old 31.5 h was at generation batch 2 |
+| 6 | curriculum RL, 178 steps | **~9.6 h** | ~4.9 h | **MEASURED 1 GPU** 2026-10-22, same 5.4x factor; the old 24.0 h was at generation batch 2 |
 | 7 | context extension 2k → 128k | **12.9 h** | 12.9 h | **MEASURED 1 GPU** (ckpt meta, `dbs=1`) |
 | 8 | 128k SFT, 800 steps | **5.1 h** | 5.1 h | **MEASURED 1 GPU** (ckpt meta `d28b-128k-sft-v5`) |
 | 9 | touch-up ladder, 840 steps, 6 sub-stages | **6.8 h** | 3.4 h | **MEASURED 1 GPU** (ckpt meta v5b…v6j) |
@@ -72,15 +85,59 @@ within 2 %, from independent routes.
 | 13 | e2e acceptance | 0.3 h | 0.3 h | measured |
 | 14 | regression tests | 0.2 h | 0.2 h | measured |
 | 15 | scrub test | 0.2 h | 0.2 h | measured |
-| | **TOTAL** | **249.3 h** | **135.6 h** | |
-| | **in days** | **10.4** | **5.7** | |
-| | **+ 15 % contingency** | **11.3 d** | **6.5 d** | |
+| | **TOTAL** | **203.1 h** | **106.0 h** | |
+| | **in days** | **8.5** | **4.4** | |
+| | **+ 15 % contingency** | **9.7 d** | **5.1 d** | |
+
+## The generation batch: the biggest single win of the review
+
+The RL stages (4, 5 and 6) decode rollouts, and until 2026-10-22 they
+decoded them **two at a time**: `--device-batch-size 2` was used for both
+the generation and the training forward, and with `--num-samples 16` that
+meant 8 sequential `generate()` calls of 2 samples per example.
+
+The decode step is latency-bound on a batch that does not fill the GPU, so
+the wall clock is nearly independent of the batch size. Measured on this
+node with the real trained checkpoint, a real GSM8K prompt, 128 max tokens
+and one A100-40GB:
+
+| samples per call | wall clock | throughput |
+|---|---|---|
+| 2 | 3.69 s | 69 tok/s |
+| 16 | 3.62 s | 565 tok/s |
+| 64 | 3.53 s | 2,323 tok/s |
+| 256 | 4.12 s | 7,918 tok/s |
+| 512 | 5.67 s | 11,556 tok/s |
+| 1024 | OOM (the KV cache) | - |
+
+The recipe now decodes all 16 rollouts in **one** call. End to end, on the
+real `scripts.chat_rl` with the real warmup checkpoint:
+
+| generation batch | seconds per optimizer step | projected ETA for stage 4 |
+|---|---|---|
+| 2 (the old behaviour) | 58.4 | 60.1 h |
+| **16 (the new one)** | **10.9** | **11.2 h** |
+
+**5.4x faster**, and it is the same training math: the same 16 rollouts
+per example, the same rewards, the same gradient.
+
+The value 16 is not arbitrary. It is the measured memory ceiling: the RL
+trainer's peak is at `opt.step()` (the AdamW moments are allocated
+transiently on top of the 22.56 GiB of state), and
+`gen batch 16 -> 33.18 GiB`, `32 -> 35.12 GiB`, `64 -> OOM`. It is also
+exactly `--num-samples`, so all the rollouts of an example decode in one
+call.
+
+The trainers now take `--gen-batch-size` explicitly, defaulting to
+`--device-batch-size` so nothing changes unless the flag is passed. The
+training forward keeps its own small device batch, because that path
+holds activations *and* gradients and has a different memory profile.
 
 ## Where the time actually goes
 
 ```
-pretrain (stage 1)   145.3 h   58 %   <- pure GPU compute
-RL stages 4+5+6      69.0 h   28 %   <- GENERATION-bound, not GPU-bound
+pretrain (stage 1)   145.3 h   72 %   <- pure GPU compute
+RL stages 4+5+6      27.6 h   14 %   <- GENERATION-bound; was 69.0 h at generation batch 2
 touch-up (stage 9)    6.8 h    3 %
 longctx 7+8          18.0 h    7 %   <- dbs=1; does NOT scale with GPU count
 everything else      10.2 h    4 %

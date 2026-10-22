@@ -39,7 +39,8 @@ run_mod "$LOG_DIR/stage5_rl_agentic.log" scripts.chat_rl_agentic \
   --run "utak-rl-agentic" \
   --model-tag "$TAG_RL_PILOT" --model-step 100 \
   --num-epochs 1 \
-  --device-batch-size 2 --examples-per-step 16 --num-samples 16 \
+  --device-batch-size 2 --gen-batch-size 16 \
+  --examples-per-step 16 --num-samples 16 \
   --max-new-tokens 512 --temperature 1.0 --top-k 50 \
   --embedding-lr 0.2 --unembedding-lr 0.004 --matrix-lr 0.02 \
   --weight-decay 0.0 --init-lr-frac 0.05 \

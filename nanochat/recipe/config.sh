@@ -10,6 +10,14 @@
 # are "utak-<stage>".
 set -u
 
+# log writes to STDERR on purpose: several helpers are called inside a
+# command substitution (e.g. GPU_PRETRAIN="$(pick_free_gpus 1)"), and a log
+# line on stdout would be captured into the variable. Stage logs are
+# redirected with 2>&1 anyway, so nothing is lost.
+log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2; }
+
+die() { printf '[utak][%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
+
 # ---------------------------------------------------------------------------
 # Identity
 # ---------------------------------------------------------------------------
@@ -102,6 +110,73 @@ MODEL_DIR="${MODEL_DIR:-$VLLM_DIR/$MODEL_DIR_NAME}"
 # or ~270 h (~11.3 days) with a 15% restart/IO contingency.
 # See docs/ETA_1GPU.md for the derivation.
 # ---------------------------------------------------------------------------
+# How much free memory does a card have, in MiB?
+# ---------------------------------------------------------------------------
+gpu_free_mib() {
+  local idx="$1" used total
+  used=$(nvidia-smi -i "$idx" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null)
+  total=$(nvidia-smi -i "$idx" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null)
+  if [ -z "$used" ] || [ -z "$total" ]; then echo 0; return; fi
+  echo $((total - used))
+}
+
+# ---------------------------------------------------------------------------
+# Pick N free cards automatically.
+#
+# WHY THIS EXISTS
+# --------------
+# The profiles below used to hardcode card indices (GPU_PRETRAIN=6, etc.).
+# That is wrong on a shared node: the occupancy of a card changes by the
+# hour. The 2026-10-21 21:25 launch picked GPU 6 because the profile said
+# so; GPU 6 was at 100% utilisation with another tenant's job, and the run
+# OOMed. Worse, a hardcoded card can be BUSY or, just as bad, a card that
+# is free but that the other tenant is about to fill.
+#
+# A card qualifies as free when it has no compute process on it that is not
+# ours. "Free" is deliberately about PROCESSES, not about free memory: a
+# card with a small leftover allocation but no process is still usable, and
+# a card with 30 GiB used by someone else is not.
+#
+# Usage:
+#   GPU_PRETRAIN="$(pick_free_gpus 1)"     # one free card
+#   GPU_PRETRAIN="$(pick_free_gpus 2)"     # two free cards
+#
+# If fewer than N cards are free it returns the ones it found and logs a
+# warning; the caller decides whether to continue.
+# ---------------------------------------------------------------------------
+gpu_is_free() {
+  local idx="$1" pid owner
+  for pid in $(nvidia-smi -i "$idx" --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do
+    [ -z "$pid" ] && continue
+    owner=$(stat -c %U "/proc/$pid" 2>/dev/null) || owner="?"
+    [ "$owner" = "rowel" ] || return 1
+  done
+  return 0
+}
+
+pick_free_gpus() {
+  local want="${1:-1}" out="" g
+  for g in 0 1 2 3 4 5 6 7; do
+    if gpu_is_free "$g"; then
+      out="${out:+$out,}$g"
+      [ "$(awk -F, '{print NF}' <<< "$out")" -ge "$want" ] && break
+    fi
+  done
+  if [ -z "$out" ]; then
+    log "WARNING: no free GPU found (every card has a foreign process on it)."
+    return 1
+  fi
+  local got
+  got="$(awk -F, '{print NF}' <<< "$out")"
+  if [ "$got" -lt "$want" ]; then
+    log "WARNING: asked for $want free GPU(s), found $got ($out)."
+  else
+    log "auto-picked $got free GPU(s): $out"
+  fi
+  echo "$out"
+}
+
+# ---------------------------------------------------------------------------
 # PROFILE selects the GPU layout. Three are supported:
 #
 #   PROFILE=multi   4 GPUs for the pretrain, 1 for the rest  (the default;
@@ -162,21 +237,49 @@ MODEL_DIR="${MODEL_DIR:-$VLLM_DIR/$MODEL_DIR_NAME}"
 PROFILE="${PROFILE:-multi}"
 case "$PROFILE" in
   1gpu)
-    # One card for everything except the server. Pick a card that is FREE:
-    # a 40 GiB card already holding a vLLM server cannot also hold d28.
-    GPU_PRETRAIN="${GPU_PRETRAIN:-6}"
-    GPU_SFT="${GPU_SFT:-6}"
-    GPU_LONGC="${GPU_LONGC:-6}"
-    GPU_TOUCHUP="${GPU_TOUCHUP:-6}"
+    # One card for everything except the server.
+    #
+    # The card is AUTO-PICKED (a free one), not hardcoded: card occupancy on
+    # this node changes by the hour, and a hardcoded index is how the
+    # 2026-10-21 launch died (it wanted GPU 6; GPU 6 was at 100% with
+    # another tenant's job). GPU_PRETRAIN etc. still override it.
+    #
+    # THE DEVICE BATCH IS 2, NOT 4. Measured with the real trainer on one
+    # A100-40GB (2026-10-22):
+    #     dbs 2 -> 1,868 ms/step, 17,525 tok/s, 41.4% MFU, peak 32,050 MiB
+    #     dbs 3 -> OOM
+    #     dbs 4 -> OOM (39.30 GiB in use, 201 MiB free)
+    # dbs=2 is both the only one that fits AND 13.7% faster than the
+    # dbs=4 figure the old note recorded (15,413 tok/s). The reason it
+    # fits: the memory is dominated by the OPTIMIZER STATE, which at world
+    # size 1 is entirely unsharded -- 15.0 GiB of fp32 moments for 2.02 B
+    # parameters -- plus 3.76 GiB of bf16 weights and 3.76 GiB of bf16
+    # gradients. The activations are the small part.
+    if [ -z "${GPU_PRETRAIN:-}" ]; then GPU_PRETRAIN="$(pick_free_gpus 1)" || die "no free GPU for the 1gpu profile"; fi
+    if [ -z "${GPU_SFT:-}" ];       then GPU_SFT="$GPU_PRETRAIN"; fi
+    if [ -z "${GPU_LONGC:-}" ];     then GPU_LONGC="$GPU_PRETRAIN"; fi
+    if [ -z "${GPU_TOUCHUP:-}" ];   then GPU_TOUCHUP="$GPU_PRETRAIN"; fi
     ;;
   2gpu)
     # Two cards. The 128k stages (7, 8) and the touch-ups (9) stay on ONE
     # card: they use base_train_long.py / chat_sft_long.py, which use a
     # plain AdamW and do not reduce gradients across ranks.
-    GPU_PRETRAIN="${GPU_PRETRAIN:-6,7}"
-    GPU_SFT="${GPU_SFT:-6,7}"
-    GPU_LONGC="${GPU_LONGC:-6}"
-    GPU_TOUCHUP="${GPU_TOUCHUP:-6}"
+    #
+    # THE DEVICE BATCH IS 2, NOT 4. Measured with the real trainer on two
+    # A100-40GB (2026-10-22, GPUs 0+2, both exclusive):
+    #     dbs 2 -> 964 ms/step, 33,941 tok/s, 40.1% MFU, peak 37,378 MiB/rank
+    #     dbs 4 -> OOM (39.49 GiB in use, 21 MiB free)
+    #
+    # THIS OVERTurnS the earlier "2 GPUs is impossible" conclusion
+    # (commit 0d4aafd). The old note compared the UNSHARDED 35.34 GiB
+    # against a two-rank run, but the optimizer state is ZeRO-2 SHARDED, so
+    # at world size 2 each rank holds 15.0/2 = 7.5 GiB of moments instead
+    # of 15.0 GiB. Two ranks at dbs=2 fit, and give 1.94x the throughput
+    # of one rank (33,941 vs 17,525 tok/s).
+    if [ -z "${GPU_PRETRAIN:-}" ]; then GPU_PRETRAIN="$(pick_free_gpus 2)" || die "need 2 free GPUs for the 2gpu profile"; fi
+    if [ -z "${GPU_SFT:-}" ];       then GPU_SFT="$GPU_PRETRAIN"; fi
+    if [ -z "${GPU_LONGC:-}" ];     then GPU_LONGC="${GPU_LONGC:-$(echo "$GPU_PRETRAIN" | cut -d, -f1)}"; fi
+    if [ -z "${GPU_TOUCHUP:-}" ];   then GPU_TOUCHUP="${GPU_TOUCHUP:-$(echo "$GPU_PRETRAIN" | cut -d, -f1)}"; fi
     ;;
   multi)
     GPU_PRETRAIN="${GPU_PRETRAIN:-4,5,6,7}"
@@ -344,9 +447,7 @@ mkdir -p "$LOG_DIR"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-log() { printf '[utak][%s] %s\n' "$(date '+%F %T')" "$*"; }
 
-die() { printf '[utak][%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 
 # Run a module from the nanochat checkout with the base dir exported.
 # The perf env vars (OMP_NUM_THREADS, PYTORCH_ALLOC_CONF, NCCL_*) are
@@ -379,34 +480,28 @@ Set GPU_LONGC to a single card."
 }
 
 # ---------------------------------------------------------------------------
-# How much free memory does a card have, in MiB?
-# ---------------------------------------------------------------------------
-gpu_free_mib() {
-  local idx="$1" used total
-  used=$(nvidia-smi -i "$idx" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null)
-  total=$(nvidia-smi -i "$idx" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null)
-  if [ -z "$used" ] || [ -z "$total" ]; then echo 0; return; fi
-  echo $((total - used))
-}
-
-# ---------------------------------------------------------------------------
 # Warn if a card does not have enough room for the model.
 #
-# MEASURED on this node, d28, 2k ctx, real scripts.base_train:
+# MEASURED on this node, d28, 2k ctx, real scripts.base_train
+# (2026-10-22, A100-SXM4-40GB, device batch 2):
 #
-#   world size 1   reserves ~35.5 GiB   (1 GPU, device batch 2: 35.68)
-#   world size 2   reserves ~33-35 GiB PER RANK
+#   world size 1   peak 32,050 MiB   (37,378 MiB at world size 2 per rank)
+#   world size 2   peak 37,378 MiB PER RANK
 #
 # The cost is the optimizer state, not the activations: 2.02 B parameters
 # x (fp32 exp_avg + fp32 exp_avg_sq) = 15.0 GiB of moments, plus the bf16
 # weights and gradients (3.8 GiB each), plus the reduce-scatter and
-# all-gather buffers. It does NOT scale down with the device batch --
-# measured at device batch 1, 2 and 4, the reserved total is the same.
+# all-gather buffers. The moments are ZeRO-2 SHARDED, so a two-rank run
+# holds 7.5 GiB of moments per rank instead of 15.0 GiB -- which is why
+# two ranks fit where the old note (which compared unsharded numbers)
+# said they could not.
 #
-# So a card shared with another tenant's jobs usually cannot hold d28,
-# no matter how small the device batch is.
+# A card shared with another tenant's jobs cannot hold d28 at world size 1
+# (32 GiB of the 40 GiB card is needed and the tenant's processes are not
+# ours to evict), so the profiles auto-pick a card with no foreign
+# process on it.
 # ---------------------------------------------------------------------------
-PRETRAIN_MEM_NEEDED_MIB="${PRETRAIN_MEM_NEEDED_MIB:-37600}"
+PRETRAIN_MEM_NEEDED_MIB="${PRETRAIN_MEM_NEEDED_MIB:-38000}"
 
 check_gpu_memory() {
   local stage="$1" gpus="$2" need="$3" g free

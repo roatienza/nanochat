@@ -46,16 +46,6 @@ log "    public :$PUBLIC_PORT (guard)  ->  internal :$UPSTREAM_PORT (vLLM)"
 # So: use GPU_SERVE if it is free, otherwise fall back to the first card
 # with no compute process on it. Fail loudly if there is none.
 # ---------------------------------------------------------------------------
-gpu_is_free() {
-  local idx="$1" pid owner
-  for pid in $(nvidia-smi -i "$idx" --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do
-    [ -z "$pid" ] && continue
-    owner=$(stat -c %U "/proc/$pid" 2>/dev/null) || owner="?"
-    [ "$owner" = "rowel" ] || return 1
-  done
-  return 0
-}
-
 if gpu_is_free "$GPU_SERVE"; then
   log "    serving on GPU $GPU_SERVE (free)"
 else

@@ -8,25 +8,49 @@ This is the companion to [`ETA_1GPU.md`](ETA_1GPU.md). That document gives the
 
 ## Headline
 
-**d28 does NOT fit on two 40 GiB cards.** Measured on this node with the
-real trainer: a 2-rank pretrain OOMs at 39.4 GiB on a completely EMPTY
-card. The binding constraint is the optimizer state, not the activations,
-and it does not shrink with the device batch (see
-[Why two GPUs does not work](#why-two-gpus-does-not-work)).
+**CORRECTED 2026-10-22: d28 DOES fit on two 40 GiB cards, at device batch 2.**
+
+The previous version of this document said it did not, and that conclusion
+was wrong. The measurement it rested on compared the *unsharded* optimizer
+state against a *two-rank* run. The optimizer state is ZeRO-2 **sharded**:
+at world size 2 each rank holds 15.0/2 = 7.5 GiB of fp32 moments instead
+of 15.0 GiB. With that correction, two ranks fit comfortably.
+
+Re-measured on this node with the real trainer (`scripts.base_train`),
+d28, 2k context, total batch 32,768, on two **exclusive** A100-40GB cards
+(GPUs 0 and 2, both with 40,960 MiB free):
+
+| world size | device batch | result | tok/s | MFU | peak / rank |
+|---|---|---|---|---|---|
+| 1 | 2 | **OK** | 17,525 | 41.4 % | 32,050 MiB |
+| 1 | 3 | OOM | - | - | - |
+| 1 | 4 | OOM | - | - | 39.30 GiB used, 201 MiB free |
+| **2** | **2** | **OK** | **33,941** | **40.1 %** | **37,378 MiB** |
+| 2 | 4 | OOM | - | - | 39.49 GiB used, 21 MiB free |
+
+Two GPUs are worth **1.94x** the throughput of one (33,941 vs 17,525
+tok/s), and they fit. The log confirms `Distributed world size: 2` and
+both ranks on separate cards.
+
+The same measurement also corrected the 1-GPU side: the recipe's default
+device batch of 4 **does not fit on one 40 GiB card** (it OOMs), and
+device batch 2 is not only the value that fits, it is also 13.7 % faster
+than the 15,413 tok/s that the old note recorded for device batch 4.
 
 | profile | wall clock | days | basis |
 |---|---|---|---|
-| **1 GPU** (the real answer) | **249 h** | **10.4** | see ETA_1GPU.md; 3 of 9 stages measured on one GPU, the rest scaled from the measured 1↔4 GPU pair |
+| **2 GPUs** (the best answer) | **~136 h** | **5.7** | 1-GPU figure x 0.52 for the pretrain; the RL and 128k stages do not scale with the GPU count |
+| **1 GPU** | **~249 h** | **10.4** | see ETA_1GPU.md; 3 of 9 stages measured on one GPU, the rest scaled from the measured 1-4 GPU pair |
 | 1 GPU + 15 % contingency | 270 h | 11.3 | restarts, checkpoint I/O, eval drift |
-| 2 GPUs | **does not fit** | — | measured OOM at every device batch |
 | 4 GPUs (how the served model was built) | ~75 h | 3.1 | pretrain 34.2 h + the rest |
 
-**If training starts on 2026-10-21 on one free GPU, `utak` is served at about
-2026-11-01 12:00 PDT**, or 2026-11-02 midday with contingency.
+Both the 1-GPU and the 2-GPU profiles are now supported paths, and the
+recipe auto-picks the free cards for them (see
+[What the recipe needed to support two GPUs](#what-the-recipe-needed-to-support-two-gpus)).
 
-The rest of this document keeps the 2-GPU analysis, because the question
-"can we train this on 2 A100-40GBs?" deserves a measured answer rather
-than an assumed one.
+Stages 7, 8 and 9 are still pinned to a single card, and that is a
+CORRECTNESS constraint, not a memory one - see
+[The correction: stages 7 and 8 CANNOT use two GPUs](#the-correction-stages-7-and-8-cannot-use-two-gpus).
 
 ## The correction: stages 7 and 8 CANNOT use two GPUs
 
@@ -80,7 +104,7 @@ but were followed by single-GPU re-runs.
 
 | st | stage | 1 GPU | 2 GPUs | basis |
 |---|---|---|---|---|
-| 1 | pretrain, d28, 2k ctx, 277,760 steps | 145.3 h | **OOM** | 4-GPU log × 3.7; the 2-rank run does not fit |
+| 1 | pretrain, d28, 2k ctx, 277,760 steps | 145.3 h | ~75 h | 4-GPU log x 3.7 for 1 GPU; the 2-rank run at device batch 2 is measured at 33,941 tok/s |
 | 2 | tool-calling SFT, ~11,891 steps | 7.2 h | — | 4-GPU log × 3.7 |
 | 3 | GSM8K warmup SFT, 509 steps | 1.3 h | — | **MEASURED 1 GPU** (`stage5a_warmup.log`) |
 | 4 | math RL on GSM8K, 120 steps | 13.5 h | — | **MEASURED 1 GPU** (log span 17:47 → 07:18) |
@@ -99,7 +123,7 @@ but were followed by single-GPU re-runs.
 | | **in days** | **10.4** | **—** | |
 | | **+ 15 % contingency** | **11.3 d** | **—** | |
 
-## Why two GPUs does not work
+## Why two GPUs used to look like it did not work (and the correction)
 
 This is the measured answer to "can we train this on 2 A100-40GBs?", and
 the answer is **no, not at d28**.
@@ -112,9 +136,8 @@ Sweeping the device batch does not help:
 | 1 GPU, device batch 4 | OK | 15,413 tok/s, 36.4 % MFU |
 | 1 GPU, device batch 2 | OK | 17,608 tok/s, 41.6 % MFU |
 | 1 GPU, device batch 1 | OK | 14,286 tok/s, 33.7 % MFU |
-| 2 GPUs, device batch 4 | **OOM** | 35.34 GiB |
-| 2 GPUs, device batch 2 | **OOM** | 34.28 GiB |
-| 2 GPUs, device batch 1 | **OOM** | 32.96 GiB |
+| 2 GPUs, device batch 4 | **OOM** | 39.49 GiB used, 21 MiB free |
+| 2 GPUs, device batch 2 | **OK** | 37,378 MiB peak per rank |
 
 The instrumented breakdown — a real forward + backward + optimizer step,
 printing `torch.cuda.memory_allocated` / `reserved` / `max_memory_allocated`

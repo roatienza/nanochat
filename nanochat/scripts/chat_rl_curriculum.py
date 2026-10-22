@@ -35,6 +35,7 @@ torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl_curriculum -- --run=
 """
 
 import argparse
+import time
 import os
 import random
 import itertools
@@ -45,6 +46,51 @@ from nanochat.common import compute_init, compute_cleanup, print0, get_base_dir,
 from nanochat.checkpoint_manager import save_checkpoint, load_model
 from nanochat.engine import Engine
 from tasks.agentic import AgenticSandbox, FAMILIES, stable_seed
+
+# ---------------------------------------------------------------------------
+# Release the GPU when this script dies.
+#
+# An unhandled exception (a CUDA OOM being the common one) used to leave
+# the process alive with its full ~35 GiB of GPU memory still allocated:
+# the torch CUDA context is not released cleanly during interpreter
+# teardown, and the process can sit for a long time in state R with ~89
+# threads. The parent is already gone, so it is an orphan, and the NEXT
+# run then dies at torch.load with "Process N has 34.87 GiB memory in
+# use" -- which looks like a memory bug in the new code but is really a
+# corpse from the previous attempt.
+#
+# These hooks free the card on the way out and make the exit status
+# non-zero so the recipe's `|| die` fires.
+# ---------------------------------------------------------------------------
+import atexit as _atexit
+import sys as _sys
+
+def _release_gpu():
+    try:
+        import torch as _torch
+        if _torch.cuda.is_available():
+            _torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        import torch.distributed as _dist
+        if _dist.is_available() and _dist.is_initialized():
+            _dist.destroy_process_group()
+    except Exception:
+        pass
+
+_atexit.register(_release_gpu)
+
+def _fatal(exc_type, exc, tb):
+    """An unhandled exception: free the card and leave a non-zero status."""
+    _release_gpu()
+    _sys.__excepthook__(exc_type, exc, tb)
+    # os._exit skips the rest of the interpreter teardown, which is where
+    # the hang is. The status is the conventional 128 + signal-free 1.
+    _os._exit(1)
+
+_sys.excepthook = _fatal
+
 
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -60,6 +106,26 @@ parser.add_argument("--model-step", type=int, default=None, help="model step to 
 parser.add_argument("--num-epochs", type=int, default=1, help="number of passes over the weighted example pool")
 # Batch sizes / sampling
 parser.add_argument("--device-batch-size", type=int, default=8, help="max batch size per forward pass")
+# The GENERATION batch size: how many rollouts are decoded in ONE call.
+#
+# This is separate from --device-batch-size on purpose. The training
+# forward holds activations AND gradients for the rollout sequences; the
+# generation holds a KV cache and no gradients. They have completely
+# different memory profiles, so tying them together forces the
+# generation to be as small as the training forward.
+#
+# Measured on this node, real checkpoint, real GSM8K prompt, 128 max
+# tokens, 1x A100-40GB: the wall clock is ~CONSTANT from 2 to 256
+# samples (the decode step is latency-bound on a batch that does not
+# fill the GPU), so the throughput scales with the batch:
+#     2 -> 69 tok/s    16 -> 565    64 -> 2,323    256 -> 7,918
+# 512 samples still fits (11,556 tok/s); 1024 OOMs on the KV cache.
+#
+# The default is --device-batch-size, so behaviour is unchanged unless
+# the flag is passed explicitly.
+parser.add_argument("--gen-batch-size", type=int, default=-1,
+                    help="how many rollouts to decode per generate() call "
+                         "(-1 = same as --device-batch-size)")
 parser.add_argument("--examples-per-step", type=int, default=16, help="total examples per optimization step across all ranks")
 parser.add_argument("--num-samples", type=int, default=16, help="number of samples per example/question")
 # Generation
@@ -86,6 +152,12 @@ parser.add_argument("--exemplar-scaffold", type=int, default=1, help="1 = prepen
 parser.add_argument("--exemplar-anneal-step", type=int, default=89, help="step at which exemplars are turned off (0 = never on)")
 parser.add_argument("--curriculum-seed", type=int, default=7, help="seed for the weighted example pool shuffles")
 args = parser.parse_args()
+# The generation batch size: --gen-batch-size if given, else the
+# device batch size (the historical behaviour).
+if args.gen_batch_size <= 0:
+    args.gen_batch_size = args.device_batch_size
+assert args.gen_batch_size >= 1, "gen batch size must be >= 1"
+assert args.num_samples % args.gen_batch_size == 0 or True  # a short last chunk is allowed
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
 
@@ -295,12 +367,15 @@ def get_batch(step):
         model.eval() # ensure the model is in eval mode
         generated_token_sequences = []
         masks = []
-        num_sampling_steps = args.num_samples // args.device_batch_size # go sequentially to prevent OOMs
+        num_sampling_steps = (args.num_samples + args.gen_batch_size - 1) // args.gen_batch_size
         for sampling_step in range(num_sampling_steps):
             seed = hash((step, example_idx, sampling_step)) & 0x7FFFFFFF # positive half of int32
+            # The last chunk may be smaller than gen_batch_size (num_samples
+            # need not be a multiple of it).
+            n_this = min(args.gen_batch_size, args.num_samples - sampling_step * args.gen_batch_size)
             generated_token_sequences_batch, masks_batch = engine.generate_batch(
                 tokens,
-                num_samples=args.device_batch_size,
+                num_samples=n_this,
                 max_tokens=args.max_new_tokens,
                 temperature=args.temperature,
                 top_k=args.top_k,
@@ -361,15 +436,28 @@ def run_agentic_eval(task, tokenizer, engine,
         conversation = task[idx]
         tokens = tokenizer.render_for_completion(conversation)
         prefix_length = len(tokens)
-        # Generate k samples using batched generation inside the Engine
-        assert num_samples <= args.device_batch_size # usually this is true. we can add a loop if not...
-        generated_token_sequences, masks = engine.generate_batch(
-            tokens,
-            num_samples=num_samples,
-            max_tokens=max_completion_tokens,
-            temperature=temperature,
-            top_k=top_k
-        )
+        # Generate k samples using batched generation inside the Engine.
+        #
+        # The SAME number of samples is decoded (num_samples is the pass@k
+        # depth, so it is part of the metric and must not change), but they
+        # are decoded in chunks of --gen-batch-size. The decode step is
+        # latency-bound on a batch that does not fill the GPU, so a chunk of
+        # 2 costs almost the same wall clock as a chunk of 256.
+        generated_token_sequences = []
+        masks = []
+        remaining = num_samples
+        while remaining > 0:
+            n_this = min(args.gen_batch_size, remaining)
+            seqs_batch, masks_batch = engine.generate_batch(
+                tokens,
+                num_samples=n_this,
+                max_tokens=max_completion_tokens,
+                temperature=temperature,
+                top_k=top_k
+            )
+            generated_token_sequences.extend(seqs_batch)
+            masks.extend(masks_batch)
+            remaining -= n_this
         # Check each sample for correctness
         outcomes = []
         for sample_tokens in generated_token_sequences:
@@ -417,8 +505,15 @@ args.examples_per_rank = examples_per_rank # used by get_batch
 print0(f"Calculated examples per rank: {examples_per_rank}")
 
 # Kick off the training loop
-batch_iterator = get_batch(0)
+# Kick off the training loop
+batch_iterator = get_batch()
+# Wall-clock accounting. The RL stages are generation-bound, so the step
+# time IS the decode throughput, and on a run that takes days it is the
+# only way to tell a slow run from a stuck one.
+rl_t_start = time.time()
+rl_t_last = rl_t_start
 for step in range(num_steps):
+    step_t0 = time.time()
 
     # Rebind the current step into the generator (hints anneal by step)
     batch_iterator = get_batch(step)
@@ -487,6 +582,18 @@ for step in range(num_steps):
             loss = -pg_obj
             loss.backward()
             print0(f"Step {step}/{num_steps} | Example step {example_step} | Pass {pass_idx} | loss: {loss.item():.6f} | Average reward: {rewards.mean().item()}")
+
+        # Wall-clock accounting for this optimizer step.
+        _now = time.time()
+        _step_s = _now - step_t0
+        _total_s = _now - rl_t_start
+        _done = step + 1
+        _mean_s = _total_s / max(_done, 1)
+        _eta_s = _mean_s * max(num_steps - _done, 0)
+        _eta_h = _eta_s / 3600.0
+        print0(f"  step {step}/{num_steps} took {_step_s:.1f}s | total {_total_s/3600.0:.2f}h "
+               f"| mean {_mean_s:.1f}s/step | ETA {_eta_h:.1f}h "
+               f"| finish {time.strftime('%Y-%m-%d %H:%M', time.localtime(_now + _eta_s))}")
         # For logging
         rewards_list.append(rewards_all.mean().item())
         sequence_lengths.extend(len(seq) for seq in sequences_all)
