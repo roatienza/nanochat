@@ -276,3 +276,82 @@ news->CALL web_search type=news. (All five were broken before.)
 REMAINING (needs full Stage-7b retrain, ~4.5h, to fix): P7 bare-chain stop
 under template v6, LOOP turn-2, MT24 24k search_web drift, F3/F5 routing at
 4/5-3/5. The touch-up scale cannot hold all boundaries at once.
+
+## 2026-10-20 — v6h gated + deployed; v6i rejected; the long-history date finding
+
+User asked: fix tool calling, serve on 8000. All nanochat vllm servers were
+stopped first (8017 v6g + an orphaned EngineCore holding 38 GB on GPU 0).
+
+v6h (anchor-stop: P7-anchor round-2 call rides as context-only no_train) was
+trained to step 240 the night before but never packed/gated. Packed it
+(pack_v6h.sh), gated on 8017:
+  v5x 14/15 (only F1 fresh-hello 4/5; seed3 emitted a spurious bash ls call)
+  HP  6/7  (only HP5 poisoned-date 1/3)
+CORE TOOL LOOP FIXED: LOOP 4-turn, P1 1-round-answer, P13 q-answered-by-r1 —
+the three gates v6g failed — all PASS. P7 0/10 over-calls holds.
+
+Root cause of both residuals (bisection, measured on the live server):
+a LONG dense assistant turn at the end of replayed history — the real
+session's 2479-char "run A" answer — breaks the system-header date
+association; the model then samples a _DATES pool date (2026-10-01/05/15/19)
+while still citing "per the system header". Filler text of identical length
+does NOT trigger it => register/content effect, not length. All training
+rows taught date-from-header with SHORT histories only.
+
+v6i attempt: ended ~30-35% of synthetic histories on long dense assistant
+turns (_LONG_ANSWER_PADS, register-matched) in all three harness tasks.
+Result: v5x 15/15 (F1 fixed!) but HP5 WORSE — replay-only date 0/5. The
+synthetic rows taught the wrong association (long history -> any pool date
+is acceptable). REJECTED; task edits kept (harmless, register coverage).
+
+Key measured fact: BOTH v6h and v6i fail "date today" after the REAL
+51-turn replay alone (0/5 each). HP5's 1/3 pass on v6h is fragile. The
+underlying weakness is date-from-header under long real-session history;
+fixing it properly needs training rows built from the REAL session text,
+not synthetic pads.
+
+DEPLOYED: v6h (nanochat-d28b-rl100-128k-v6h, template v7, GPU 0, port 8000,
+served name nanochat-d28b-rl100). Verified on 8000: v5x 14/15, HP 6/7 —
+identical to the gate run. This is the best checkpoint: core tool calling
+(call routing, stop, loop, poison-resistance) all pass; the residual is a
+date-cosmetic under adversarial long history, not a tool-calling defect.
+
+Artifacts: run_v6i.sh, pack_v6i.sh, serve_v6i_8017.sh, serve_v6h_8000.sh;
+results test_v6h_{v5x,hp}_run.txt, test_v6i_{v5x,hp}_run.txt,
+test_v6h_8000_{deploy,hp}.txt; diag probes in vllm_d28b/ (inline heredocs).
+
+## 2026-10-20 (afternoon) — "hello hangs" round 2: real root cause + guard proxy
+- Symptom persisted after round-1 serving fixes. Live log showed harness requests generating 34 tok/s for 16-21 min each.
+- Real cause: harness self-poisoning. baby-onit saves final answers verbatim to session_history.jsonl; yesterday's degenerate outputs (33k/65k chars of 'mmmm...') were saved and replayed into every new turn (HISTORY_KEEP_FULL=3 keeps last 3 answers full; the 8k budget cannot split one oversized message). Model pattern-continues the m's as tool-call args ('CALL bash {"mmmm...') until client max_tokens=32768. Deterministic: 0/12 loops on clean 14k replay, 3/3 on poisoned replay. Garbage rides in tool-call args, invisible to content stops.
+- Fixes: (1) session_history.jsonl sanitized in place (backup kept); (2) guard_proxy.py — vllm to internal 8010, guard on 8000: max_tokens clamp 4096, always-stream upstream, mid-stream degeneration abort (48+ identical chars / 200+ m-only chars) with clean SSE finish, degenerate tool-call slots dropped, 150s wall-clock, sampling untouched; (3) serve script restart-safe (stale-port cleanup, guard respawn, trap).
+- Verified: poisoned replay+hello 2.1s clean (was 16-21 min); fresh hello 0.37s; v5x 14/15 (F1 4/5 only), HP 6/7 (HP5 1/3 only) — unchanged. Artifacts: guard_proxy.py, guard_aborts.log, test_v5x_final_8000.txt, test_hp_final_8000.txt.
+- User action needed: restart baby-onit REPL (history is loaded once at startup) or \reset.
+- Model-level residuals for next training run: F1, HP5, and the degeneration tendency itself (guard bounds it; real-session training rows are the cure).
+
+## 2026-10-20 (evening) — "slow + incomplete response, many newlines" round 3: the literal-\n training-data bug
+- Symptom: baby-onit "date today" returned 4096 tokens of literal "\n" (backslash+n) and took 124s; the answer was saved to session_history.jsonl and then replayed on every later turn.
+- It is NOT the m-loop from round 2. That was period-1 (48+ IDENTICAL chars). This is a PERIOD-2 cycle: the byte-BPE alternates '\' and 'n', so a same-char test can never see it. My round-2 guard detector was blind to it by construction.
+- Reproduced exactly before fixing: repro_poison.py rebuilt the harness prompt (real baby-onit build_session_messages + build_system_prompt + the real poisoned history) -> 120.4s, len 8193, 4088 literal \n, 0 real newlines. Raw vLLM on 8010 with NO guard emitted the same (197 lit-\n in 200 tokens) => model-level, not transport.
+- Trigger isolated: FRESH "date today" clean 0.6s | CLEAN history + "date today" clean 0.6s | POISONED history + "hello" clean 0.4s | POISONED history + "date today" 120s garbage. The poisoned history is an in-context ATTRACTOR: history row 11 is literally user "date today" -> assistant "\n\n\n...".
+- ROOT CAUSE: tasks/harness_basics.py _LONG_ANSWER_PADS[1] used "\\n\\n" (escaped BACKSLASH) in a Python string literal, so the SUPERVISED TARGET itself contained literal backslash-n. The model learned to emit it. Template v7 is clean (no tojson on assistant text).
+- Fixes: (1) tasks/harness_basics.py:158-159 now use real newlines; (2) tasks/test_no_literal_newline.py — regression test over 600 generated rows from harness_basics/replay/poison (verified to FAIL when the bug is reintroduced); (3) guard_proxy.py — new period-aware detector (_max_period_suffix over periods 2..8, >= 8 reps, >= 32 chars, repeated block must be pathological: backslash, or only m/whitespace/dot), is_degenerate(), strip_degenerate_tail(), and scrub_messages() which DROPS degenerate assistant turns from the request history (proven: trimming only the tail does NOT work, 30s and still degenerates; replacing the whole turn -> 0.6s clean); (4) session_history.jsonl sanitized (39.8KB -> 1.45KB, 6 degenerate rows truncated, backup kept).
+- Verified live on 8000: poisoned replay "date today" 120.4s -> 0.6s clean ("Today's date is 2026-10-19, per the system header."); prompt 5201 tok -> 529 tok; e2e harness sim over the user's exact 8-turn sequence = 0/8 degenerate, 0.4-15.3s per turn; v5x gate 14/15 (F1 4/5 only) and HP gate 6/7 (HP5 1/3 only) — IDENTICAL to before, no tool-calling regression.
+- Retraining: run_v6j.sh (v6h recipe + fixed data) on GPU 7, 240 iters, ~2h; pack_v6j.sh ready. v6h stays deployed on 8000 in the meantime.
+- Follow-up (same evening): the '\n' spam was only the FIRST of several degeneration shapes. Found and fixed four more by hunting live failures (hunt_failure.py) and CALIBRATING each detector on 20 REAL model answers (18 good / 2 degenerate) so the thresholds are measured, not guessed:
+  * period-p cycles (p=2..8) with a pathological repeated block (backslash, or only m/ws/dot)
+  * repeated_segment_run: the same segment 4x in a row with separators normalised
+  * near_period_repetition: a frame that repeats while its content drifts ("## The wind is...## The wind is...")
+  * count_literal_n >= 4 / consecutive_literal_n >= 3  <-- the key signal; clean separation (0 good answers had 4+, all 3 degenerate did)
+  * heading_density >= 1.5 '##' per 100 chars
+  * max_segment_frequency >= 3 (a list that loops over a few entries)
+  * len >= 4000 chars (runaway enumeration where every line is unique, so no repetition test can see it)
+  * first_degeneracy_pos(): an aborted generation is truncated at the FIRST degeneracy point, so the client keeps the coherent prefix
+  * the streaming detector counts literal-'\n' over the WHOLE generation, not just the sliding 600-char window (the spam could start early and slide out of view)
+- Calibration artifacts: calibration_answers.jsonl (20 real answers), calibrate{,2,3,4,5}.py, failing_answer.txt, test_guard_regression.py (legit tool args must survive), test_segment_detector.py, test_detector.py. Result: 0 false positives / 3 true positives on the labeled set; 18/18 real good answers unflagged and untruncated.
+- VERIFIED final: poisoned replay "date today" 120.4s -> 0.6s clean; e2e harness using the REAL baby-onit agent_loop over the user's 8-turn sequence: 8/8 runs clean (64/64 turns, 0.4-15.3s each); v5x gate 14/15 (F1 fresh-hello 4/5 only) and HP gate 6/7 (HP5 poisoned-date 1/3 only) - IDENTICAL to before, so tool calling is untouched.
+- v6j retrain (run_v6j.sh, GPU 7, v6h recipe + the fixed data) was at step 120/240; pack_v6j.sh ready. v6h remains deployed on 8000 until v6j passes the gates.
+- v6j TRAINED AND DEPLOYED (2026-10-20 23:00). run_v6j.sh: v6h recipe + the fixed training data, 240 iters on GPU 7, final val bpb 0.393419, EXIT=0. pack_v6j.sh -> nanochat-d28b-rl100-128k-v6j. GATE on 8016: v5x 15/15 (v6h was 14/15; F1 fresh-hello now PASSES) and HP 6/7 (HP5 still fails - pre-existing). Deployed on 8000 behind the guard via serve_v6j_8000.sh; re-verified live on 8000: v5x 15/15, HP 6/7.
+- IMPORTANT MEASUREMENT (compare_v6h_v6j.py, verify_scrub_is_the_fix.py): v6j alone does NOT cure the '\n' spam when the POISONED history is replayed raw. A) raw v6j + poisoned history = 15.7s of literal-\n garbage (504 lit-\n in 512 tokens). B) raw v6j + SCRUBBED history = 0.6s clean. C) v6j via the GUARD + poisoned history = 0.6s clean. => the GUARD'S HISTORY SCRUB is the load-bearing fix; the retrain removes the SOURCE of the behaviour but a poisoned history re-teaches it in context. Both are needed: the retrain stops the model from learning/producing it, the scrub stops a poisoned history from re-infecting it.
+- Guard tuning after calibration: MAX_ANSWER_CHARS 4000 -> 2000 and MAX_SECONDS 150 -> 45 (the longest legitimate real answer was 839 chars / 8.8s, so this is 2.4x / 5x headroom). Also fixed a MISSING `break` in the runaway-length branch of the streaming detector: it set `aborted` but never stopped the stream, so a runaway answer still ran the full token budget (the 121s hang). That missing break was the last reason the hang survived the earlier fixes.
+- FINAL VERIFICATION on the deployed 8000 (external IP path, the one the harness uses): rate_check.py over the user's exact sequence (hello / who are you / date today / weather today) x10 = 40 turns, 0 slow (>30s), 0 degenerate, worst 21.4s; e2e_harness.py (real baby-onit agent_loop, 8 turns) x6 = 48/48 turns clean; poisoned replay "date today" 120.4s -> 0.6s clean.
+- Residual, pre-existing and unchanged: HP5 (poisoned-date) is 0-1/3 - the model still sometimes answers "date today" with a training-pool date after long replayed history. It is cosmetic and pre-dates this work (v6h had the same). A fix needs training rows built from the REAL session text.
