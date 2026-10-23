@@ -1,0 +1,54 @@
+W1015 09:27:23.476000 1676968 torch/distributed/run.py:803] 
+W1015 09:27:23.476000 1676968 torch/distributed/run.py:803] *****************************************
+W1015 09:27:23.476000 1676968 torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1015 09:27:23.476000 1676968 torch/distributed/run.py:803] *****************************************
+Autodetected device type: cuda
+2026-10-15 09:27:35,215 - nanochat.common - [32m[1mINFO[0m - Distributed world size: 2
+wandb: Currently logged in as: rowel to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: creating run
+wandb: Tracking run with wandb version 0.21.3
+wandb: Run data is saved locally in /data/rowel/nanochat/wandb/run-20261015_092736-jsl3zsku
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run stage7b-final-100
+wandb: ⭐️ View project at https://wandb.ai/rowel/nanochat-longctx
+wandb: 🚀 View run at https://wandb.ai/rowel/nanochat-longctx/runs/jsl3zsku
+Loading source /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-128k-sft step 500
+Building model: {'sequence_len': 131072, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL', 'short_window': 512, 'rope_base': 100000}
+Training mixture: 471,294 rows (LongCtx x2, ToolCalling x1, ToolACE x1, SmolTalk x1)
+Tokens/micro-batch/rank: 1 x 131072 = 131,072
+Total batch 262,144 => grad accum 1
+Training for 100 steps
+Step 00000 | Validation bpb: 0.355233
+Step 00000/100 | loss 0.0946 | 10,323 tok/s | 25.4s/step | ETA 42 min | mem 32.6 GB
+Step 00005/100 | loss 0.4441 | 10,681 tok/s | 24.5s/step | ETA 39 min | mem 32.6 GB
+Step 00010/100 | loss 0.6517 | 10,356 tok/s | 25.3s/step | ETA 38 min | mem 32.6 GB
+Step 00015/100 | loss 0.7776 | 11,087 tok/s | 23.6s/step | ETA 33 min | mem 32.6 GB
+Step 00020/100 | loss 0.8786 | 11,163 tok/s | 23.5s/step | ETA 31 min | mem 32.6 GB
+Step 00025/100 | loss 0.8992 | 11,403 tok/s | 23.0s/step | ETA 29 min | mem 32.6 GB
+Step 00030/100 | loss 0.9247 | 10,924 tok/s | 24.0s/step | ETA 28 min | mem 32.6 GB
+Step 00035/100 | loss 0.9298 | 11,184 tok/s | 23.4s/step | ETA 25 min | mem 32.6 GB
+Step 00040/100 | loss 0.9327 | 11,162 tok/s | 23.5s/step | ETA 23 min | mem 32.6 GB
+Step 00045/100 | loss 0.9309 | 10,335 tok/s | 25.4s/step | ETA 23 min | mem 32.6 GB
+Step 00050/100 | loss 0.8940 | 10,749 tok/s | 24.4s/step | ETA 20 min | mem 32.6 GB
+Step 00055/100 | loss 0.8761 | 10,970 tok/s | 23.9s/step | ETA 18 min | mem 32.6 GB
+Step 00060/100 | loss 0.8269 | 10,986 tok/s | 23.9s/step | ETA 16 min | mem 32.6 GB
+Step 00065/100 | loss 0.8542 | 9,457 tok/s | 27.7s/step | ETA 16 min | mem 32.6 GB
+Step 00070/100 | loss 0.8674 | 11,005 tok/s | 23.8s/step | ETA 12 min | mem 32.6 GB
+Step 00075/100 | loss 0.8588 | 10,888 tok/s | 24.1s/step | ETA 10 min | mem 32.6 GB
+Step 00080/100 | loss 0.8319 | 10,864 tok/s | 24.1s/step | ETA 8 min | mem 32.6 GB
+Step 00085/100 | loss 0.8312 | 10,868 tok/s | 24.1s/step | ETA 6 min | mem 32.6 GB
+Step 00090/100 | loss 0.8122 | 11,071 tok/s | 23.7s/step | ETA 4 min | mem 32.6 GB
+Step 00095/100 | loss 0.8237 | 10,934 tok/s | 24.0s/step | ETA 2 min | mem 32.6 GB
+Step 00100 | Validation bpb: 0.362573
+2026-10-15 10:08:27,344 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved model parameters to: /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-128k-sft-final/model_000100.pt
+2026-10-15 10:08:27,345 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved metadata to: /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-128k-sft-final/meta_000100.json
+2026-10-15 10:08:32,834 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-128k-sft-final/optim_000100_rank1.pt
+2026-10-15 10:08:38,987 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-128k-sft-final/optim_000100_rank0.pt
+Stage 7b done.
+[W1015 10:08:40.712788808 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mstage7b-final-100[0m at: [34mhttps://wandb.ai/rowel/nanochat-longctx/runs/jsl3zsku[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20261015_092736-jsl3zsku/logs[0m
+[W1015 10:08:42.373918851 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())
+[W1015 10:08:43.719340717 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())
+EXIT=0

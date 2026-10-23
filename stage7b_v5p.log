@@ -1,0 +1,42 @@
+2026-10-17 22:12:05,472 - nanochat.common - [32m[1mINFO[0m - Distributed world size: 1
+wandb: Currently logged in as: rowel to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: creating run
+wandb: Tracking run with wandb version 0.21.3
+wandb: Run data is saved locally in /data/rowel/nanochat/wandb/run-20261017_221206-mrfr6h0x
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run stage7b-v5p-noweathercp
+wandb: ⭐️ View project at https://wandb.ai/rowel/nanochat-longctx
+wandb: 🚀 View run at https://wandb.ai/rowel/nanochat-longctx/runs/mrfr6h0x
+2026-10-17 22:24:39,541 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved model parameters to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v5p/model_000030.pt
+2026-10-17 22:24:39,542 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved metadata to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v5p/meta_000030.json
+2026-10-17 22:24:50,235 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v5p/optim_000030_rank0.pt
+2026-10-17 22:36:56,930 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved model parameters to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v5p/model_000060.pt
+2026-10-17 22:36:56,931 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved metadata to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v5p/meta_000060.json
+2026-10-17 22:37:07,754 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v5p/optim_000060_rank0.pt
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mstage7b-v5p-noweathercp[0m at: [34mhttps://wandb.ai/rowel/nanochat-longctx/runs/mrfr6h0x[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20261017_221206-mrfr6h0x/logs[0m
+Autodetected device type: cuda
+Loading source /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v5e step 60
+Building model: {'sequence_len': 8192, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL', 'short_window': 512, 'rope_base': 100000}
+Training mixture: 67,176 rows (LongCtx x2, ToolCalling x1, ToolACE x1, FollowUp x1, GlaiveMR x2, ToolStop x4, SmolTalk x1)
+Tokens/micro-batch/rank: 2 x 8192 = 16,384
+Total batch 262,144 => grad accum 16
+Training for 60 steps
+Step 00000 | Validation bpb: 0.425122
+Step 00000/60 | loss 0.1094 | 10,691 tok/s | 24.5s/step | ETA 25 min | mem 25.6 GB
+Step 00005/60 | loss 0.5085 | 10,939 tok/s | 24.0s/step | ETA 22 min | mem 25.6 GB
+Step 00010/60 | loss 0.7266 | 11,457 tok/s | 22.9s/step | ETA 19 min | mem 25.6 GB
+Step 00015/60 | loss 0.8401 | 11,328 tok/s | 23.1s/step | ETA 17 min | mem 25.6 GB
+Step 00020 | Validation bpb: 0.427022
+Step 00020/60 | loss 0.8863 | 11,618 tok/s | 22.6s/step | ETA 15 min | mem 25.6 GB
+Step 00025/60 | loss 0.9364 | 10,764 tok/s | 24.4s/step | ETA 14 min | mem 25.6 GB
+Step 00030/60 | loss 0.9297 | 11,011 tok/s | 23.8s/step | ETA 12 min | mem 25.6 GB
+Step 00035/60 | loss 0.9966 | 11,455 tok/s | 22.9s/step | ETA 10 min | mem 25.6 GB
+Step 00040 | Validation bpb: 0.426123
+Step 00040/60 | loss 1.0055 | 11,505 tok/s | 22.8s/step | ETA 8 min | mem 25.6 GB
+Step 00045/60 | loss 0.9638 | 10,922 tok/s | 24.0s/step | ETA 6 min | mem 25.6 GB
+Step 00050/60 | loss 0.9734 | 11,339 tok/s | 23.1s/step | ETA 4 min | mem 25.6 GB
+Step 00055/60 | loss 0.9579 | 11,071 tok/s | 23.7s/step | ETA 2 min | mem 25.6 GB
+Step 00060 | Validation bpb: 0.425518
+Stage 7b done.

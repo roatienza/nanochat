@@ -319,8 +319,9 @@ _SYS_SHORT = ["You are a helpful AI agent. Working directory: {dir} (today: {tod
               "You are {name}, a concise technical assistant."]
 _NAMES = ["baby-onit", "onit", "an agent", "a helpful assistant"]
 
-_DATES = ["2026-10-18", "2026-10-17", "2026-10-16", "2026-10-12", "2026-09-30",
-          "2026-10-01", "2026-10-05", "2026-10-09", "2026-10-14", "2026-10-15"]
+_DATES = ["2026-10-19", "2026-10-18", "2026-10-17", "2026-10-16", "2026-10-12",
+          "2026-09-30", "2026-10-01", "2026-10-05", "2026-10-09", "2026-10-14",
+          "2026-10-15"]
 
 _TOOLISH_CALLS = [
     # (final user turn, tool name, args, needs_type)
@@ -383,7 +384,10 @@ class HarnessReplay(Task):
         return None, None  # no system message
 
     def _gen_history(self, rng, budget_tokens, today):
-        """2-50 prior user/assistant pairs; technical register; returns msgs."""
+        """2-50 prior user/assistant pairs; technical register; returns msgs.
+        v6i: ~30% of histories end on a LONG dense assistant turn (800-2600
+        chars) — the measured trigger shape for the date-header association
+        loss (HP5/F1 residual); date rows must be taught under it."""
         msgs = []
         used = 0
         n_turns = rng.choice([0, 2, 2, 3, 3, 4, 4, 5, 6, 8, 8, 10, 12, 16, 20, 24, 30, 40, 50, 60])
@@ -403,10 +407,23 @@ class HarnessReplay(Task):
                                 "The numbers are in the table above; nothing regressed."])
             else:
                 a, _ = rng.choice(_ANSWER_TEMPLATES)(rng, topic)
+                # v6i: long final assistant turn on ~30% of non-short histories
+                if t == n_turns - 1 and rng.random() < 0.30:
+                    from tasks.harness_basics import _LONG_ANSWER_PADS
+                    pad = []
+                    while sum(len(x) for x in pad) < rng.randint(800, 2600):
+                        pad.append(rng.choice(_LONG_ANSWER_PADS).format(
+                            noun=topic["noun"], subject=topic["subject"],
+                            flaw=topic["flaw"], verdict=topic["verdict"],
+                            n1=rng.randint(2, 400), n2=rng.choice([240, 467, 500]),
+                            n3=rng.randint(8, 12) * 1000 + rng.randint(0, 999),
+                            n4=rng.randint(3, 40),
+                            f1=f"{rng.uniform(0.30, 0.45):.4f}",
+                            f2=f"{rng.uniform(0.25, 0.35):.4f}"))
+                    a = a + "\n\n" + "\n\n".join(pad)
                 if rng.random() < 0.4:
                     # extend: real sessions carry 300-800-token answers
                     a += ("\n\n## Notes\n- " + rng.choice([
-                        "the numbers above are at temp 0, single seed",
                         "the same gate ran clean twice in a row",
                         "the config is unchanged from the last deploy",
                         "the log dir has the full output if you want it",
@@ -522,8 +539,11 @@ class HarnessReplay(Task):
         if sys_p is not None:
             msgs = [{"role": "system", "content": sys_p}] + msgs
 
-        # v6 placement: the tools block rides the FINAL user turn (the turn
-        # that acts), matching template v6 and the harness's acting turn.
+        # v7 placement: the tools block rides the FIRST user turn (template v7
+        # = v5 placement), matching ToolStop/GlaiveMR/ToolFollowUp corpus rows.
+        # The v6 final-turn placement broke live tool loops: at the answer-from-
+        # result decision the last user turn IS the result turn, so the block
+        # landed right before the prose — a shape zero corpus rows teach.
         tools_txt = render_tools_prompt(tools) if tools is not None else None
         # Shape shares (v5u): H1 social 30%, H2 easy 20%, H3 toolish->CALL 15%
         # (schema-driven mapping), H4 date-from-system 12%, H6 toolish-no-call
@@ -556,7 +576,9 @@ class HarnessReplay(Task):
                 q, a = rng.choice(_EASY_QS)
             else:
                 q = rng.choice(["date today", "what's the date today?", "what day is it?"])
-                a = f"Today is {today}."
+                # v6g: cite the header (HP5 fix — pool dates leaked as targets)
+                a = rng.choice([f"Today is {today} (from the working directory header).",
+                                f"Today's date is {today}, per the system header."])
         elif u < 0.90:
             q, a = rng.choice(_TOOLISH_KNOWLEDGE)
         else:
@@ -571,8 +593,18 @@ class HarnessReplay(Task):
                          "flaw": rng.choice(_FLAWS), "dir": rng.choice(_DIRS),
                          "verdict": rng.choice(_VERDICTS)}
                 a = rng.choice(_ANSWER_TEMPLATES)(rng, topic)[1]
-        # v6: the final user turn carries the tools block (the acting turn)
-        msgs.append({"role": "user", "content": q + (("\n\n" + tools_txt) if tools_txt else "")})
+        # v7: the tools block rides the FIRST user turn. If history exists, the
+        # block goes on the first history turn (the question that opened the
+        # session); the final turn stays bare, matching the corpus rows that
+        # end result->prose with no block before the answer.
+        if tools_txt is not None:
+            first_user = next((i for i, m in enumerate(msgs) if m["role"] == "user"), None)
+            if first_user is None:
+                msgs.append({"role": "user", "content": tools_txt})
+                msgs.append({"role": "assistant", "content": "Understood — ready for your request."})
+            else:
+                msgs[first_user]["content"] = (msgs[first_user]["content"] + "\n\n" + tools_txt)
+        msgs.append({"role": "user", "content": q})
         msgs.append({"role": "assistant", "content": a})
         return {"messages": msgs}
 

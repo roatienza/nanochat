@@ -84,6 +84,34 @@ _TOOLS = [
         "required": ["amount", "from_", "to"]}}},
 ]
 
+# v6g: description-bearing variants. The P1/P13/LOOP gates (and the real
+# harnesses) pass tool schemas WITH descriptions; the v6f census showed ZERO
+# mixture rows teach [get_weather CALL -> Tool result -> PROSE] with
+# descriptions (ToolStop D rows have none, ToolFollowUp has no get_weather).
+# Half the D rows now use these, so the stop boundary holds under both forms.
+_TOOLS_DESC = [
+    {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city",
+     "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"},
+      "unit": {"type": "string", "description": "Temperature unit"}}, "required": ["city"]}}},
+    {"type": "function", "function": {"name": "get_time", "description": "Get the current local time in a city",
+     "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}},
+      "required": ["city"]}}},
+    {"type": "function", "function": {"name": "search_web", "description": "Search the web for a query",
+     "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search query"}},
+      "required": ["query"]}}},
+    {"type": "function", "function": {"name": "get_stock_price", "description": "Get the current stock price for a ticker symbol",
+     "parameters": {"type": "object", "properties": {"symbol": {"type": "string", "description": "Ticker symbol"}},
+      "required": ["symbol"]}}},
+    {"type": "function", "function": {"name": "get_air_quality", "description": "Get the air quality index for a city",
+     "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}},
+      "required": ["city"]}}},
+    {"type": "function", "function": {"name": "convert_currency", "description": "Convert an amount between currencies",
+     "parameters": {"type": "object", "properties": {"amount": {"type": "number", "description": "Amount"},
+      "from_": {"type": "string", "description": "Source currency"},
+      "to": {"type": "string", "description": "Target currency"}},
+      "required": ["amount", "from_", "to"]}}},
+]
+
 _CITIES = ["Tokyo", "Oslo", "Lima", "Cairo", "Sydney", "Toronto", "Marseille",
            "Nairobi", "London", "Paris", "Berlin", "Madrid", "Seoul", "Dubai",
            "Singapore", "Bogota", "Helsinki", "Lisbon", "Prague", "Vienna",
@@ -224,9 +252,10 @@ class ToolStop(Task):
     def _mk_tools(self, rng, names):
         """The used tools plus a random number of decoys (harnesses pass the
         full tool list; training must not key on 'only the used tool is
-        listed')."""
-        used = [t for t in _TOOLS if t["function"]["name"] in names]
-        decoys = [t for t in _TOOLS if t["function"]["name"] not in names]
+        listed'). v6g: half the rows use the description-bearing variants."""
+        pool = _TOOLS_DESC if rng.random() < 0.5 else _TOOLS
+        used = [t for t in pool if t["function"]["name"] in names]
+        decoys = [t for t in pool if t["function"]["name"] not in names]
         k = rng.choice([0, 0, 1, 1, 2, len(decoys)]) if decoys else 0
         extra = rng.sample(decoys, k)
         out = used + extra

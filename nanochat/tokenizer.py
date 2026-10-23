@@ -182,6 +182,10 @@ class RustBPETokenizer:
 
             # content can be either a simple string or a list of parts (e.g. containing tool calls)
             content = message["content"]
+            # no_train (v6c): ride in context, never supervise. Poison/antipattern
+            # rows put the model's own BROKEN answers in history — they must be
+            # seen as context, never imitated as targets.
+            no_train = bool(message.get("no_train", False))
 
             if message["role"] == "user":
                 assert isinstance(content, str), "User messages are simply expected to be strings"
@@ -194,18 +198,18 @@ class RustBPETokenizer:
                 if isinstance(content, str):
                     # simple string => simply add the tokens
                     value_ids = self.encode(content)
-                    add_tokens(value_ids, 1)
+                    add_tokens(value_ids, 0 if no_train else 1)
                 elif isinstance(content, list):
                     for part in content:
                         value_ids = self.encode(part["text"])
                         if part["type"] == "text":
                             # string part => simply add the tokens
-                            add_tokens(value_ids, 1)
+                            add_tokens(value_ids, 0 if no_train else 1)
                         elif part["type"] == "python":
                             # python tool call => add the tokens inside <|python_start|> and <|python_end|>
-                            add_tokens(python_start, 1)
-                            add_tokens(value_ids, 1)
-                            add_tokens(python_end, 1)
+                            add_tokens(python_start, 0 if no_train else 1)
+                            add_tokens(value_ids, 0 if no_train else 1)
+                            add_tokens(python_end, 0 if no_train else 1)
                         elif part["type"] == "python_output":
                             # python output => add the tokens inside <|output_start|> and <|output_end|>
                             # none of these tokens are supervised because the tokens come from Python at test time
@@ -216,7 +220,7 @@ class RustBPETokenizer:
                             raise ValueError(f"Unknown part type: {part['type']}")
                 else:
                     raise ValueError(f"Unknown content type: {type(content)}")
-                add_tokens(assistant_end, 1)
+                add_tokens(assistant_end, 0 if no_train else 1)
 
         # truncate to max_tokens tokens MAX (helps prevent OOMs)
         ids = ids[:max_tokens]

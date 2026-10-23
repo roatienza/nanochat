@@ -1,0 +1,52 @@
+ckpt 240 present at 21:44:25
+export DONE: tensors: 203, total params: 2.019B
+config patched: {'max_position_embeddings': 131072, 'sequence_len': 131072}
+aux copied; contents:
+total 7887184
+drwxrwxr-x+  2 rowel ucl       4096 Oct 18 21:44 .
+drwxrwxr-x+ 40 rowel ucl      20480 Oct 18 21:44 ..
+-rw-rw-r--+  1 rowel ucl       6864 Oct 17 14:32 chat_template.jinja
+-rw-rw-r--+  1 rowel ucl       6864 Oct 18 21:44 chat_template_v5.jinja
+-rw-rw-r--+  1 rowel ucl        713 Oct 18 21:44 config.json
+-rw-------+  1 rowel ucl       1569 Oct 17 14:32 configuration_nanochat.py
+-rw-------+  1 rowel ucl      26528 Oct 17 14:32 modeling_nanochat_d28.py
+-rw-------+  1 rowel ucl 8074067000 Oct 18 21:44 model.safetensors
+-rw-------+  1 rowel ucl        309 Oct 17 14:32 tokenizer_config.json
+-rw-rw-r--+  1 rowel ucl    2325650 Oct 17 14:32 tokenizer.json
+packed at 21:44:35
+serving v5z at 21:51:51
+=== v5x gate (REAL harness shape, temp 0.6): 21:51:51 ===
+F1 fresh hello                 3/5 -> FAIL
+     ('tool_calls', [('read_file', '{"path":"notes","content":"notes"}')], '')
+     ('length', [], 'Deployed. The the RL run is live and verified:\n\n1. packed an')
+F2 fresh 2+2                   1/5 -> FAIL
+     ('tool_calls', [('bash', '{"command":"ls"}')], '')
+     ('tool_calls', [('web_search', '{"query":"weather Tokyo"}')], '')
+F3 fresh files->bash ls        0/5 -> FAIL
+     ('stop', [], 'Short version: **the fix holds**.\n\n- the fix holds at the en')
+     ('length', [], 'I compared the two checkpoints on the gate suite:\n\n| | A | B')
+F4 fresh weather->call         1/5 -> FAIL
+     ('tool_calls', [('read_file', '{"path":"notes"}')], '')
+     ('length', [], "Here's the script, with the two footguns removed:\n\n```bash\n#")
+F5 fresh fetch->call           1/5 -> FAIL
+     ('tool_calls', [('web_search', '{"query":"weather Tokyo"}')], '')
+     ('tool_calls', [('read_file', '{"path":"notes"}')], '')
+R1 replay hello                3/3 -> PASS
+R2 replay weather->call        0/3 -> FAIL
+     ('tool_calls', [('get_weather', '{"city":"Nairobi","unit":"Celsius"}')], '')
+     ('stop', [], 'Today is **Happy Monday** in New York City**.')
+R3 replay news->call           0/3 -> FAIL
+     ('stop', [], 'Today is **the 24th** of July** in 2024.')
+     ('length', [], 'The latest news comes in: **the 24k family** is going to go ')
+R4 replay 2+2                  3/3 -> PASS
+R5 replay files->bash ls       0/3 -> FAIL
+     ('length', [], 'I compared the two checkpoints on stage7b-v5:\n\n| | A | B |\n|')
+     ('stop', [], 'The working directory for your RL project is **your_project.')
+LOOP 4-turn                    FAIL (T1=True T2=False T3=True)
+P7 bare 2-round over-call      10/10 -> FAIL
+P13 q-answered-by-r1           5/5 -> FAIL
+P1 1-round answer              0/5 -> FAIL
+MT24 multi_tool ~24k           -> FAIL answer='CALL search_web {"query":"Oslo logistics bulletin"}'
+=== v5x gate: 2/15 PASS ===
+{"F1": false, "F2": false, "F3": false, "F4": false, "F5": false, "R1": true, "R2": false, "R3": false, "R4": true, "R5": false, "LOOP": false, "P7": false, "P13": false, "P1": false, "MT24": false}
+gate done at 21:53:12

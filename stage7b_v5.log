@@ -1,0 +1,12 @@
+2026-10-16 09:10:00,199 - nanochat.common - [32m[1mINFO[0m - Distributed world size: 1
+wandb: Currently logged in as: rowel to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: creating run
+wandb: Tracking run with wandb version 0.21.3
+wandb: Run data is saved locally in /data/rowel/nanochat/wandb/run-20261016_091001-5wqv3t2e
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run stage7b-v5
+wandb: ⭐️ View project at https://wandb.ai/rowel/nanochat-longctx
+wandb: 🚀 View run at https://wandb.ai/rowel/nanochat-longctx/runs/5wqv3t2e
+2026-10-16 09:49:48,735 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved model parameters to: /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-128k-sft-v5/model_000100.pt
+2026-10-16 09:49:48,736 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved metadata to: /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-128k-sft-v5/meta_000100.json
+2026-10-16 09:49:59,629 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /data/rowel/nanochat_store/v2/chatsft_checkpoints/d28b-128k-sft-v5/optim_000100_rank0.pt

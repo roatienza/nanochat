@@ -1,0 +1,35 @@
+[16:19:14] === v5 eval chain start: waiting for step 800 ===
+[16:59:19] step-800 checkpoint found
+[16:59:19] --- export ---
+[16:59:29] export DONE: tensors: 203, total params: 2.019B
+total 7887168
+drwxrwxr-x+  2 rowel ucl       4096 Oct 16 16:59 .
+drwxrwxr-x+ 13 rowel ucl      12288 Oct 16 16:59 ..
+-rw-------+  1 rowel ucl       5789 Oct 16 08:25 chat_template.jinja
+-rw-rw-r--+  1 rowel ucl        713 Oct 16 16:59 config.json
+-rw-------+  1 rowel ucl       1569 Oct 16 08:25 configuration_nanochat.py
+-rw-------+  1 rowel ucl      26528 Oct 16 08:25 modeling_nanochat_d28.py
+-rw-------+  1 rowel ucl 8074067000 Oct 16 16:59 model.safetensors
+-rw-------+  1 rowel ucl        309 Oct 16 08:25 tokenizer_config.json
+-rw-rw-r--+  1 rowel ucl    2325650 Oct 16 08:25 tokenizer.json
+[16:59:29] --- serve on GPU 5, port 8000 ---
+[16:59:29] vllm pid 3658935; waiting for /health
+[17:00:09] server healthy after ~40s
+[17:00:09] --- conformant eval ---
+[17:00:32] conformant eval DONE
+=== NIAH (training format: 'Transcript of a scanned document...') ===
+NIAH ~ 24000 tok @50%: PASS (1.6s) answer='771842'
+NIAH ~ 64000 tok @50%: PASS (4.7s) answer='771842'
+NIAH ~105000 tok @50%: FAIL (0.3s) answer='HTTPERROR 400: {"error":{"message":"This'
+=== doc_qa (training format: 'archival record with numbered sections') ===
+doc_qa ~ 24000 tok: PASS (1.9s) answer='Reading room passes are issued at the north desk and expire '
+doc_qa ~ 64000 tok: PASS (5.2s) answer='Reading room passes are issued at the north desk and expire '
+=== multi_tool 32k (training format: <tools> wrapper + CALL instruction) ===
+multi_tool ~ 24000 tok: PASS (1.9s) answer='CALL get_weather {"city":"Oslo","unit":"Celsius"}'
+multi_tool ~ 32000 tok: PASS (2.5s) answer='CALL get_weather {"city":"Oslo","unit":"Celsius"}'
+=== multi_tool short via OpenAI tools API (auto) ===
+tool short (auto): PASS (0.8s) args='{"city":"Tokyo","unit":"Celsius"}'
+=== long_summary 24k (training format: 'Summarize ... in 3 bullet points') ===
+long_summary ~24k tok: FAIL (3.3s) bullets=3 themes_hit=1 answer='- The report discusses training: the relevant sections outline current practice '
+ALL DONE
+[17:00:32] === v5 eval chain end (server left running on port 8000) ===

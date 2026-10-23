@@ -15,3 +15,14 @@ param_audit.py
 mem_probe.py
 sweep.sh
 budget_real.py
+
+# Large raw training-runtime logs. These are the full stdout of multi-hour
+# GPU runs and are reproducible from the launchers; the small evidence logs
+# (<=10 KB) stay tracked. The numbers extracted from these are in
+# EXECUTION_LOG.md.
+stage7a.log
+stage7b.log
+stage7b_v2.log
+stage7b_v3.log
+stage7b_v4.log
+stage7b_v5_resume.log

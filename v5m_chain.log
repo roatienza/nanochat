@@ -1,0 +1,33 @@
+[20:07:54] === v5m chain start: waiting for step 60 ===
+[20:33:00] step-60 checkpoint found
+[20:33:00] --- trainer done; stopping v5j server ---
+[20:35:40] --- pack v5m ---
+export DONE: tensors: 203, total params: 2.019B
+config patched: {'max_position_embeddings': 131072, 'sequence_len': 131072}
+aux copied; contents:
+total 7887180
+drwxrwxr-x+  2 rowel ucl       4096 Oct 17 20:35 .
+drwxrwxr-x+ 25 rowel ucl      20480 Oct 17 20:35 ..
+-rw-rw-r--+  1 rowel ucl       6864 Oct 17 14:32 chat_template.jinja
+-rw-rw-r--+  1 rowel ucl        713 Oct 17 20:35 config.json
+-rw-------+  1 rowel ucl       1569 Oct 17 14:32 configuration_nanochat.py
+-rw-------+  1 rowel ucl      26528 Oct 17 14:32 modeling_nanochat_d28.py
+-rw-------+  1 rowel ucl 8074067000 Oct 17 20:35 model.safetensors
+-rw-------+  1 rowel ucl        309 Oct 17 14:32 tokenizer_config.json
+-rw-rw-r--+  1 rowel ucl    2325650 Oct 17 14:32 tokenizer.json
+[20:35:50] pack DONE
+[20:35:50] --- serve v5m on GPU 5, port 8000 ---
+[20:35:50] vllm pid 2150117; waiting for /health
+[20:36:00] server healthy after ~10s
+[20:36:00] --- v5m gate ---
+4 / 6
+[20:36:18] gate DONE
+=== v5m gate: 20:36:00 ===
+multi_tool ~ 24000 tok: PASS (1.4s) answer='CALL get_weather {"city":"Oslo","unit":"Celsius"}'
+multi_tool ~ 32000 tok: PASS (1.7s) answer='CALL get_weather {"city":"Oslo","unit":"Celsius"}'
+P7 bare 2-round same tool: over-call 10/10 -> FAIL
+P13 q-answered-by-r1: over-call 5/5 -> FAIL
+P1 1-round answer: 5/5 -> PASS
+LOOP 4-turn: T1=True T2=True T3=True -> PASS
+=== v5m gate: 4/6 PASS ===
+[20:36:19] === v5m chain end (server left running on port 8000) ===

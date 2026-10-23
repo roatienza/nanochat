@@ -1,0 +1,87 @@
+2026-10-19 22:09:31,309 - nanochat.common - [32m[1mINFO[0m - Distributed world size: 1
+wandb: Currently logged in as: rowel to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: creating run
+wandb: Tracking run with wandb version 0.21.3
+wandb: Run data is saved locally in /data/rowel/nanochat/wandb/run-20261019_220932-l6iydl3u
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run stage7b-v6g-descstop
+wandb: ⭐️ View project at https://wandb.ai/rowel/nanochat-longctx
+wandb: 🚀 View run at https://wandb.ai/rowel/nanochat-longctx/runs/l6iydl3u
+2026-10-19 22:38:06,860 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved model parameters to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/model_000060.pt
+2026-10-19 22:38:06,861 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved metadata to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/meta_000060.json
+2026-10-19 22:38:16,692 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/optim_000060_rank0.pt
+2026-10-19 23:05:11,992 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved model parameters to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/model_000120.pt
+2026-10-19 23:05:11,993 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved metadata to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/meta_000120.json
+2026-10-19 23:05:22,247 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/optim_000120_rank0.pt
+2026-10-19 23:31:58,859 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved model parameters to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/model_000180.pt
+2026-10-19 23:31:58,861 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved metadata to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/meta_000180.json
+2026-10-19 23:32:08,901 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/optim_000180_rank0.pt
+2026-10-19 23:59:00,372 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved model parameters to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/model_000240.pt
+2026-10-19 23:59:00,373 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved metadata to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/meta_000240.json
+2026-10-19 23:59:11,146 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Saved optimizer state to: /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6g/optim_000240_rank0.pt
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mstage7b-v6g-descstop[0m at: [34mhttps://wandb.ai/rowel/nanochat-longctx/runs/l6iydl3u[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20261019_220932-l6iydl3u/logs[0m
+Autodetected device type: cuda
+Loading source /home/rowel/.cache/nanochat/chatsft_checkpoints/d28b-128k-sft-v6a step 240
+Building model: {'sequence_len': 32768, 'vocab_size': 32768, 'n_layer': 28, 'n_head': 14, 'n_kv_head': 14, 'n_embd': 1792, 'window_pattern': 'SSSL', 'short_window': 512, 'rope_base': 100000}
+Training mixture: 133,176 rows (LongCtx x2, ToolCalling x1, ToolACE x1, FollowUp x1, GlaiveMR x2, ToolStop x6, HarnessReplay x2, HarnessBasics x3, HarnessPoison x3, SmolTalk x1)
+Tokens/micro-batch/rank: 1 x 32768 = 32,768
+Total batch 262,144 => grad accum 8
+Training for 240 steps
+Step 00000 | Validation bpb: 0.393432
+Step 00000/240 | loss 0.0595 | 9,320 tok/s | 28.1s/step | ETA 112 min | mem 25.7 GB
+Step 00005/240 | loss 0.1872 | 8,782 tok/s | 29.8s/step | ETA 117 min | mem 25.7 GB
+Step 00010/240 | loss 0.2363 | 9,046 tok/s | 29.0s/step | ETA 111 min | mem 25.7 GB
+Step 00015/240 | loss 0.2544 | 9,276 tok/s | 28.3s/step | ETA 106 min | mem 25.7 GB
+Step 00020/240 | loss 0.2893 | 9,220 tok/s | 28.4s/step | ETA 104 min | mem 25.7 GB
+Step 00025/240 | loss 0.3162 | 9,140 tok/s | 28.7s/step | ETA 103 min | mem 25.7 GB
+Step 00030/240 | loss 0.3957 | 9,928 tok/s | 26.4s/step | ETA 92 min | mem 25.7 GB
+Step 00035/240 | loss 0.3874 | 9,476 tok/s | 27.7s/step | ETA 95 min | mem 25.7 GB
+Step 00040 | Validation bpb: 0.395539
+Step 00040/240 | loss 0.3324 | 9,878 tok/s | 26.5s/step | ETA 88 min | mem 25.7 GB
+Step 00045/240 | loss 0.3331 | 9,989 tok/s | 26.2s/step | ETA 85 min | mem 25.7 GB
+Step 00050/240 | loss 0.3127 | 9,875 tok/s | 26.5s/step | ETA 84 min | mem 25.7 GB
+Step 00055/240 | loss 0.2789 | 9,798 tok/s | 26.8s/step | ETA 82 min | mem 25.7 GB
+Step 00060/240 | loss 0.2809 | 9,132 tok/s | 28.7s/step | ETA 86 min | mem 25.7 GB
+Step 00065/240 | loss 0.2677 | 10,571 tok/s | 24.8s/step | ETA 72 min | mem 25.7 GB
+Step 00070/240 | loss 0.2960 | 10,342 tok/s | 25.3s/step | ETA 72 min | mem 25.7 GB
+Step 00075/240 | loss 0.3271 | 10,149 tok/s | 25.8s/step | ETA 71 min | mem 25.7 GB
+Step 00080 | Validation bpb: 0.395655
+Step 00080/240 | loss 0.3060 | 9,720 tok/s | 27.0s/step | ETA 72 min | mem 25.7 GB
+Step 00085/240 | loss 0.2760 | 9,951 tok/s | 26.3s/step | ETA 68 min | mem 25.7 GB
+Step 00090/240 | loss 0.2904 | 9,959 tok/s | 26.3s/step | ETA 66 min | mem 25.7 GB
+Step 00095/240 | loss 0.3283 | 9,861 tok/s | 26.6s/step | ETA 64 min | mem 25.7 GB
+Step 00100/240 | loss 0.3173 | 9,835 tok/s | 26.7s/step | ETA 62 min | mem 25.7 GB
+Step 00105/240 | loss 0.2634 | 9,847 tok/s | 26.6s/step | ETA 60 min | mem 25.7 GB
+Step 00110/240 | loss 0.2714 | 9,699 tok/s | 27.0s/step | ETA 59 min | mem 25.7 GB
+Step 00115/240 | loss 0.3111 | 9,414 tok/s | 27.8s/step | ETA 58 min | mem 25.7 GB
+Step 00120 | Validation bpb: 0.394375
+Step 00120/240 | loss 0.3226 | 9,265 tok/s | 28.3s/step | ETA 57 min | mem 25.7 GB
+Step 00125/240 | loss 0.3059 | 9,836 tok/s | 26.6s/step | ETA 51 min | mem 25.7 GB
+Step 00130/240 | loss 0.2828 | 10,059 tok/s | 26.1s/step | ETA 48 min | mem 25.7 GB
+Step 00135/240 | loss 0.2752 | 9,873 tok/s | 26.6s/step | ETA 46 min | mem 25.7 GB
+Step 00140/240 | loss 0.2772 | 10,071 tok/s | 26.0s/step | ETA 43 min | mem 25.7 GB
+Step 00145/240 | loss 0.2959 | 9,852 tok/s | 26.6s/step | ETA 42 min | mem 25.7 GB
+Step 00150/240 | loss 0.2952 | 10,013 tok/s | 26.2s/step | ETA 39 min | mem 25.7 GB
+Step 00155/240 | loss 0.3880 | 10,170 tok/s | 25.8s/step | ETA 37 min | mem 25.7 GB
+Step 00160 | Validation bpb: 0.393033
+Step 00160/240 | loss 0.3499 | 10,200 tok/s | 25.7s/step | ETA 34 min | mem 25.7 GB
+Step 00165/240 | loss 0.3486 | 9,772 tok/s | 26.8s/step | ETA 34 min | mem 25.7 GB
+Step 00170/240 | loss 0.3732 | 10,056 tok/s | 26.1s/step | ETA 30 min | mem 25.7 GB
+Step 00175/240 | loss 0.3576 | 9,760 tok/s | 26.9s/step | ETA 29 min | mem 25.7 GB
+Step 00180/240 | loss 0.3201 | 9,895 tok/s | 26.5s/step | ETA 26 min | mem 25.7 GB
+Step 00185/240 | loss 0.2947 | 10,162 tok/s | 25.8s/step | ETA 24 min | mem 25.7 GB
+Step 00190/240 | loss 0.3455 | 10,085 tok/s | 26.0s/step | ETA 22 min | mem 25.7 GB
+Step 00195/240 | loss 0.3290 | 10,026 tok/s | 26.1s/step | ETA 20 min | mem 25.7 GB
+Step 00200 | Validation bpb: 0.393410
+Step 00200/240 | loss 0.3079 | 10,129 tok/s | 25.9s/step | ETA 17 min | mem 25.7 GB
+Step 00205/240 | loss 0.3370 | 10,014 tok/s | 26.2s/step | ETA 15 min | mem 25.7 GB
+Step 00210/240 | loss 0.3301 | 9,875 tok/s | 26.5s/step | ETA 13 min | mem 25.7 GB
+Step 00215/240 | loss 0.4031 | 9,817 tok/s | 26.7s/step | ETA 11 min | mem 25.7 GB
+Step 00220/240 | loss 0.3847 | 9,805 tok/s | 26.7s/step | ETA 9 min | mem 25.7 GB
+Step 00225/240 | loss 0.3972 | 10,051 tok/s | 26.1s/step | ETA 7 min | mem 25.7 GB
+Step 00230/240 | loss 0.4382 | 9,796 tok/s | 26.8s/step | ETA 4 min | mem 25.7 GB
+Step 00235/240 | loss 0.3908 | 9,748 tok/s | 26.9s/step | ETA 2 min | mem 25.7 GB
+Step 00240 | Validation bpb: 0.392932
+Stage 7b done.

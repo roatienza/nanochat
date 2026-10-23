@@ -147,6 +147,79 @@ _B3_ROUTED = [
 
 _B4_TURNS = ["date today", "what's the date today?", "what day is it?", "today's date"]
 
+# v6i: filler paragraphs for LONG dense assistant turns in history. Register-
+# matched to the real session (status reports, tables, tradeoffs, decisions) —
+# the shape that made the model drop the system-header date association.
+_LONG_ANSWER_PADS = [
+    ("## Status\n\nThe {subject} run is healthy. Steps are landing at the expected "
+     "rate and the loss curve is where it should be for this point in the schedule.\n\n"
+     "| | |\n|---|---|\n| step | {n1}/{n2} |\n| loss | {f1} |\n| tok/s | {n3} |\n\n"
+     "Nothing needs your input right now; the next checkpoint lands in ~{n4} min."),
+    ("I checked the {noun} path end to end. The numbers:\n\n"
+     "- baseline: {f1}\n- with the fix: {f2}\n- p95 latency: {n3} ms\n\n"
+     "The {flaw} is gone. I re-ran the gate three times to be sure it isn't noise, "
+     "and the third run matches the first two exactly. The diff is small — three "
+     "lines in the loader plus a regression test so the silent skip can't recur. "
+     "Committed and pushed; CI is green on both commits."),
+    ("My honest read: the {verdict} is the bigger problem than the wall-clock. "
+     "Most of the rows produce zero gradient at this point, which is the real "
+     "risk. A warm-up would lift the baseline so the signal is denser — that's "
+     "the cheap early test. I'd lean toward letting it run and watching the "
+     "step-20 eval: it's the early signal, and I won't burn days if it's flat.\n\n"
+     "Repo: launch script + diagnostic logs committed and pushed, 0 ahead / 0 behind.\n\nWhich way?"),
+    ("## What changed\n- re-anchored the {noun} rows so they fit the window\n"
+     "- bumped epochs on the failing family\n- added a regression test\n\n"
+     "## What I verified\n- the {noun} gate at temp 0, 10 samples: 0 over-calls\n"
+     "- the 4-turn OpenAI loop end to end: correct\n"
+     "- val bpb on the held-out split: {f1}\n\n"
+     "## Residuals\n1. the 32k family still needs level-2 rows (queued)\n"
+     "2. the parser artifact on parallel calls (pre-existing)\n\n"
+     "Next step is a clean A/B against the current served checkpoint."),
+]
+
+
+def _B3B_RESULT(tool, args, rng):
+    """Plausible tool output for the B3b round."""
+    if tool == "web_search":
+        return rng.choice(["3 results: latest coverage summarized.",
+                           "Top result matches the query; 2 related links.",
+                           "5 results returned, first is authoritative."])
+    if tool == "bash":
+        return rng.choice(["total 12\nfile1.txt\nfile2.md\nsrc/",
+                           "Filesystem  Size  Used  Avail  Use%\n/dev/sda1  40G  18G  20G  48%",
+                           "exit 0, no output"])
+    if tool == "read_file":
+        return "# Notes\n- the eval suite is green\n- config unchanged"
+    if tool == "grep":
+        return "src/train.py:42: loss = forward(batch)"
+    if tool == "fetch_content":
+        return "Page fetched: 1.2k tokens of text extracted."
+    if tool == "write_file":
+        return "Wrote 2 lines to " + str(args.get("path", "file"))
+    if tool == "local_search":
+        return "3 documents matched; top hit: notes.md"
+    return "done"
+
+
+def _B3B_ANSWER(tool, args, result, rng):
+    """Prose answer for the B3b round: use the result, then STOP."""
+    if tool == "web_search":
+        return rng.choice(["Here's what came back: " + result,
+                           "Found it — " + result])
+    if tool == "bash":
+        return "Here's the output:\n" + result
+    if tool == "read_file":
+        return "The file says:\n" + result
+    if tool == "grep":
+        return "Found one match: " + result
+    if tool == "fetch_content":
+        return "Fetched the page. " + result
+    if tool == "write_file":
+        return "Saved. " + result
+    if tool == "local_search":
+        return "Top match: " + result
+    return result
+
 
 def _est_tokens(text):
     return max(1, len(text) // 4)
@@ -193,7 +266,10 @@ class HarnessBasics(Task):
         return None, None  # no system message
 
     def _gen_history(self, rng, today):
-        """Short technical history (2-6 pairs), harness_replay's register."""
+        """Short technical history (2-6 pairs), harness_replay's register.
+        v6i: ~35% of histories end on a LONG dense assistant turn (800-2600
+        chars, the real session's register — measured trigger for the
+        date-header association loss under long context)."""
         msgs = []
         n_turns = rng.choice([2, 2, 3, 3, 4, 4, 5, 6])
         topic = {"subject": rng.choice(_SUBJECTS), "noun": rng.choice(_NOUNS),
@@ -209,6 +285,20 @@ class HarnessBasics(Task):
                                 "The numbers are in the table above; nothing regressed."])
             else:
                 a, _ = rng.choice(_ANSWER_TEMPLATES)(rng, topic)
+            # v6i: long final assistant turn on some histories — the exact
+            # shape that broke the date-header association in the live gate
+            if t == n_turns - 1 and rng.random() < 0.35:
+                pad = []
+                while sum(len(x) for x in pad) < rng.randint(800, 2600):
+                    pad.append(rng.choice(_LONG_ANSWER_PADS).format(
+                        noun=topic["noun"], subject=topic["subject"],
+                        flaw=topic["flaw"], verdict=topic["verdict"],
+                        n1=rng.randint(2, 400), n2=rng.choice([240, 467, 500]),
+                        n3=rng.randint(8, 12) * 1000 + rng.randint(0, 999),
+                        n4=rng.randint(3, 40),
+                        f1=f"{rng.uniform(0.30, 0.45):.4f}",
+                        f2=f"{rng.uniform(0.25, 0.35):.4f}"))
+                a = a + "\n\n" + "\n\n".join(pad)
             msgs.append({"role": "user", "content": u})
             msgs.append({"role": "assistant", "content": a})
         return msgs
@@ -244,8 +334,15 @@ class HarnessBasics(Task):
         hist = self._gen_history(rng, today) if rng.random() < 0.3 else []
         msgs += hist
         tools_txt = render_tools_prompt(tools)
-        # the question rides the tools block and comes AFTER any history
-        msgs.append({"role": "user", "content": q + "\n\n" + tools_txt})
+        # v7 placement: block on the FIRST user turn. With history the block
+        # rides the first history turn and the question turn stays bare
+        # (matching the corpus rows that end result->prose); fresh: the
+        # question turn IS the first turn.
+        if hist:
+            msgs[0]["content"] = msgs[0]["content"] + "\n\n" + tools_txt
+            msgs.append({"role": "user", "content": q})
+        else:
+            msgs.append({"role": "user", "content": q + "\n\n" + tools_txt})
         names = [t["function"]["name"] for t in tools]
         if "get_weather" in names:
             call1, call2 = ({"city": city1, "unit": "Celsius"}, {"city": city2, "unit": "Celsius"})
@@ -258,8 +355,13 @@ class HarnessBasics(Task):
             {"type": "python", "text": f"CALL {name} {json.dumps(call1, separators=(',', ':'))}"}]})
         msgs.append({"role": "user", "content": f"Tool result: {result1}"})
         result2 = f"{city2}: {rng.randint(8, 25)}C, {rng.choice(['cloudy', 'rain', 'clear', 'humid'])}"
+        # v6h: the spurious round-2 call rides as CONTEXT ONLY (no_train). The
+        # v6g census showed this anchor was the SOLE source of the
+        # [get_weather result -> another get_weather call] attractor (P1/P13/
+        # LOOP-T2 fail: the model re-called get_weather Toronto on every
         msgs.append({"role": "assistant", "content": [
-            {"type": "python", "text": f"CALL {name} {json.dumps(call2, separators=(',', ':'))}"}]})
+            {"type": "python", "text": f"CALL {name} {json.dumps(call2, separators=(',', ':'))}"}],
+            "no_train": True})
         msgs.append({"role": "user", "content": f"Tool result: {result2}"})
         ans = rng.choice([
             f"{city1}: {result1.split(': ', 1)[1]}.",
@@ -292,13 +394,14 @@ class HarnessBasics(Task):
         # With no history that turn IS the final turn.
         tools_txt = render_tools_prompt(tools) if tools is not None else None
 
+        _round = None
         u = rng.random()
         if u < 0.20:  # B1 social -> greeting, no call
             q, answers = rng.choice(_B1_TURNS)
             a = rng.choice(answers)
         elif u < 0.35:  # B2 easy-knowledge -> direct answer, no call
             q, a = rng.choice(_EASY_QS)
-        elif u < 0.80:  # B3 toolish -> CALL with correct routing
+        elif u < 0.62:  # B3 toolish -> CALL with correct routing
             q, tool, mk_args = rng.choice(_B3_ROUTED)
             if tools is None or tool not in names:
                 # routed tool absent -> answer from knowledge instead
@@ -306,29 +409,49 @@ class HarnessBasics(Task):
             else:
                 a = [{"type": "python",
                       "text": f"CALL {tool} {json.dumps(mk_args(rng, today), separators=(',', ':'))}"}]
+        elif u < 0.80:
+            # B3b (v6g): the FULL loop — call -> Tool result -> PROSE answer,
+            # with the harness/classic toolset and descriptions. The v6f census
+            # showed zero rows taught the stop under descriptions (P1/P13/LOOP
+            # fail); these rows close that gap under the real toolsets.
+            q, tool, mk_args = rng.choice(_B3_ROUTED)
+            if tools is None or tool not in names:
+                q, a = rng.choice(_EASY_QS)
+            else:
+                args = mk_args(rng, today)
+                result = _B3B_RESULT(tool, args, rng)
+                # stash the round for the row builder below
+                a = [{"type": "python",
+                      "text": f"CALL {tool} {json.dumps(args, separators=(',', ':'))}"}]
+                _round = (tool, args, result)
         elif u < 0.90:  # B4 date-from-system
             if today is None:
                 q, a = rng.choice(_EASY_QS)
             else:
                 q = rng.choice(_B4_TURNS)
-                a = rng.choice([f"Today is {today}.",
-                                f"It's {today} (from the working directory header).",
-                                f"Today's date is {today}."])
+                # v6g: cite the header (HP5 fix — pool dates leaked as targets)
+                a = rng.choice([f"Today is {today} (from the working directory header).",
+                                f"Today's date is {today}, per the system header."])
         else:  # B5 toolish-knowledge -> prose, no call
             q, a = rng.choice(_TOOLISH_KNOWLEDGE)
 
-        # v6 placement: the tools block rides the LAST user turn (the turn that
-        # acts). Template v6 emits it there; the training rows must match.
-        if replay:
-            if tools_txt is not None:
+        # v7 placement: the tools block rides the FIRST user turn (template v7
+        # = v5 placement), matching the corpus rows. Fresh: the final turn IS
+        # the first turn. Replay: the block goes on the first history turn and
+        # the final turn stays bare — the shape ToolStop/GlaiveMR teach.
+        if tools_txt is not None:
+            first_user = next((i for i, m in enumerate(msgs) if m["role"] == "user"), None)
+            if first_user is None:
                 q = q + "\n\n" + tools_txt
-            msgs.append({"role": "user", "content": q})
-        else:
-            # fresh: the final user turn IS the only user turn
-            if tools_txt is not None:
-                q = q + "\n\n" + tools_txt
-            msgs.append({"role": "user", "content": q})
+            else:
+                tgt = msgs[first_user]
+                tgt["content"] = tgt["content"] + "\n\n" + tools_txt
+        msgs.append({"role": "user", "content": q})
         msgs.append({"role": "assistant", "content": a})
+        if _round is not None:
+            tool, args, result = _round
+            msgs.append({"role": "user", "content": "Tool result: " + result})
+            msgs.append({"role": "assistant", "content": _B3B_ANSWER(tool, args, result, rng)})
         return {"messages": msgs}
 
     # ------------------------------------------------------------------

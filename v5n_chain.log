@@ -1,0 +1,3 @@
+[20:37:43] === v5n chain start: waiting for step 60 ===
+[20:37:43] WARNING: trainer process gone; step-60 present? NO
+[20:37:43] ABORT: trainer died without step 60
