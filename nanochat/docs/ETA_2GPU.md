@@ -57,6 +57,22 @@ against the 72.7 h predicted here -- a 2.7 % difference, in the right
 direction. Stage 1 is the largest single stage, so the 117.6 h total
 carries about that much error.
 
+**Measured again, 2026-10-25, on a CONTENDED node: 27,300 tok/s at
+1,200 ms/step -- 24 % slower.** The 2026-10-22 figure was measured with
+every other card on the node idle. On 2026-10-25 six of the eight
+cards carry another tenant's jobs, and the 2-GPU step moves about
+5.6 GB per rank through the host bridge (16 large AdamW parameters,
+each a `reduce_scatter` plus an `all_gather`).
+
+This is NOT the resume path. A controlled A/B on the same two cards,
+same code, back to back, measured 652 ms/step fresh and 666 ms/step
+resumed -- the resume costs 2 %. See
+[`OPERATIONS.md`](OPERATIONS.md) for the full set of measurements,
+including the ones that turned out to be red herrings.
+
+So the 117.6 h total assumes a node to itself. On a contended node,
+budget **1.24x** for the 2-GPU stages: 117.6 h becomes about 146 h.
+
 Both the 1-GPU and the 2-GPU profiles are now supported paths, and the
 recipe auto-picks the free cards for them (see
 [What the recipe needed to support two GPUs](#what-the-recipe-needed-to-support-two-gpus)).
