@@ -199,6 +199,59 @@ gpu_is_free() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Do two cards talk over the same host bridge?
+#
+# WHY THIS EXISTS
+# ---------------
+# A multi-GPU run is bound by the interconnect between its cards. On this
+# node (8x A100-40GB, PCIe, no NVLink) `nvidia-smi topo -m` reports:
+#
+#     GPU0-GPU2 = NODE   (same NUMA node, one host bridge)   <- good
+#     GPU3-GPU4 = SYS    (crosses the socket interconnect)     <- 4x slower
+#
+# MEASURED 2026-10-25, the same 2-GPU job, the same code, the same
+# depth-20 model, back to back:
+#
+#     GPUs 5,7  (NODE pair)   652 ms/step
+#     GPUs 3,4  (SYS pair)  2,069 ms/step     <- 4.2x
+#
+# The collective traffic -- 16 large AdamW parameters, each a
+# reduce_scatter plus an all_gather, about 5.6 GB per step per rank --
+# has to cross the socket interconnect on a SYS pair, and that is where
+# the 4x goes.
+#
+# So the picker must not hand back a SYS pair. It returns 1 (not usable)
+# for a pair that is SYS.
+# ---------------------------------------------------------------------------
+gpu_pair_is_local() {
+  local a="$1" b="$2" link
+  # `nvidia-smi topo -m` prints a TAB-separated matrix whose row N,
+  # column M is the link type between GPU N and GPU M. The header row
+  # names the columns, so find the column index for $b and read that
+  # field out of the row for $a.
+  link=$(nvidia-smi topo -m 2>/dev/null \
+         | awk -F'\t' -v a="$a" -v b="$b" '
+             # header row: find the column whose name is "GPU<b>"
+             /GPU[0-9]+/ && !found_hdr {
+               for (i=1;i<=NF;i++) {
+                 gsub(/[^0-9]/, "", $i)
+                 if ($i == b) { col = i; found_hdr = 1; break }
+               }
+               next
+             }
+             # data row for GPU<a>
+             found_hdr && $1 ~ ("^GPU" a "$") {
+               v = $col; gsub(/[^A-Z]/, "", v); print v; exit
+             }
+           ')
+  case "$link" in
+    SYS) return 1 ;;   # crosses the socket interconnect -- too slow
+    "")  return 0 ;;   # could not read the topology: do not block the run
+    *)   return 0 ;;   # NODE, PXB, PIX, NV# -- fine
+  esac
+}
+
 pick_free_gpus() {
   local want="${1:-1}" out="" g
   for g in 0 1 2 3 4 5 6 7; do
@@ -210,6 +263,22 @@ pick_free_gpus() {
   if [ -z "$out" ]; then
     log "WARNING: no free GPU found (every card has a foreign process on it)."
     return 1
+  fi
+  # If more than one card was picked, make sure they talk over the same
+  # host bridge. Picking the lowest-indexed free cards can produce a
+  # SYS pair, which measures 4x slower (see gpu_pair_is_local).
+  if [ "$want" -gt 1 ] && [ "$(awk -F, '{print NF}' <<< "$out")" -gt 1 ]; then
+    local first second rest
+    first="${out%%,*}"
+    rest="${out#*,}"
+    second="${rest%%,*}"
+    if ! gpu_pair_is_local "$first" "$second"; then
+      log "WARNING: GPUs $first and $second are on different sockets (SYS link)."
+      log "         That measured 4x slower on 2026-10-25 (2,069 ms vs 652 ms"
+      log "         for the same job on a same-bridge pair). Falling back to a"
+      log "         single card, which is slower but correct."
+      out="$first"
+    fi
   fi
   local got
   got="$(awk -F, '{print NF}' <<< "$out")"
