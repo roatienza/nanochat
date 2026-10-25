@@ -16,7 +16,7 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import time
 import wandb
 import torch
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops, COMPUTE_DTYPE, COMPUTE_DTYPE_REASON, is_ddp_initialized
+from nanochat.common import COMPUTE_DTYPE, COMPUTE_DTYPE_REASON, DummyWandb, autodetect_device_type, compute_cleanup, compute_init, get_base_dir, get_peak_flops, is_ddp_initialized, print0
 from nanochat.tokenizer import get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_model, load_optimizer_state
 from nanochat.loss_eval import evaluate_bpb

@@ -116,8 +116,53 @@ gpu_free_mib() {
   local idx="$1" used total
   used=$(nvidia-smi -i "$idx" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null)
   total=$(nvidia-smi -i "$idx" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null)
-  if [ -z "$used" ] || [ -z "$total" ]; then echo 0; return; fi
+  # WHY THIS IS NOT JUST AN EMPTY CHECK
+  # -----------------------------------
+  # When the NVIDIA driver is in a fault state, `nvidia-smi --query-gpu`
+  # does not fail and does not print nothing. It prints the literal STRING
+  # "No devices were found" to STDOUT and exits 6. A plain "-z" test
+  # therefore PASSES, and the next line does $((total - used)) with
+  # total="No devices were found" -- bash then treats "No" as an
+  # arithmetic VARIABLE and dies with
+  #     config.sh: line 120: No: unbound variable
+  # and the caller gets an empty value, producing
+  #     config.sh: line 571: [: : integer expression expected
+  # That is how a dead driver turned into two lines of shell noise and a
+  # run that looked like it had free GPUs.
+  #
+  # So: demand that both values are pure integers, and treat anything
+  # else as "this card is not usable" (0 MiB).
+  if ! printf '%s' "$used"   | grep -Eq '^[0-9]+$'; then used=0; fi
+  if ! printf '%s' "$total"  | grep -Eq '^[0-9]+$'; then total=0; fi
+  if [ "$used" -eq 0 ] && [ "$total" -eq 0 ]; then
+    echo 0
+    return
+  fi
   echo $((total - used))
+}
+
+# ---------------------------------------------------------------------------
+# Is the CUDA runtime on this node actually working?
+#
+# `nvidia-smi` can fail in two very different ways and they need different
+# responses:
+#   * one card is busy          -> pick another card
+#   * the driver is in a fault  -> NO card will work, and a restart is
+#                                  pointless until an operator reloads the
+#                                  driver. On 2026-10-24 this was the
+#                                  difference between restarting usefully
+#                                  and restarting into the same wall.
+# ---------------------------------------------------------------------------
+gpus_healthy() {
+  local out
+  out=$(nvidia-smi -L 2>&1)
+  if printf '%s' "$out" | grep -q "Unknown Error"; then
+    return 1
+  fi
+  if printf '%s' "$out" | grep -q "No devices were found"; then
+    return 1
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -568,6 +613,10 @@ check_gpu_memory() {
   local stage="$1" gpus="$2" need="$3" g free
   for g in ${gpus//,/ }; do
     free=$(gpu_free_mib "$g")
+    # gpu_free_mib now always returns a plain integer, so this comparison
+    # is safe. The old version could pass an empty string here, and
+    # `[: : integer expression expected` was the only symptom the operator
+    # ever saw of a dead driver.
     if [ "$free" -lt "$need" ]; then
       log "WARNING: stage $stage: GPU $g has $free MiB free but d28 needs about"
       log "WARNING:   $need MiB. The run will probably OOM at the first optimizer"
@@ -599,6 +648,21 @@ run_mod() {
   local logfile="$1"; shift
   local ngpus
   ngpus="$(stage_gpu_count)"
+  # Refuse to start a GPU stage on a dead driver.
+  #
+  # On 2026-10-24 the node's driver faulted. The trainer was still happy
+  # to start: torch.cuda.is_available() was simply False, so it fell back
+  # to the CPU and ground through the remaining 72,760 steps for 15.6
+  # hours without printing a single step line. Checking the driver here
+  # turns a six-day silent failure into a one-second loud one.
+  if [ "$ngpus" -gt 0 ] && ! gpus_healthy; then
+    log "FATAL: the NVIDIA driver is not healthy on this node."
+    log "       nvidia-smi -L reports 'Unknown Error' or 'No devices were found'."
+    log "       This is a HOST-level fault: it needs a driver reload or a node"
+    log "       reset, which is an ops action, not something this recipe can do."
+    log "       Refusing to start $logfile rather than run on the CPU."
+    return 70
+  fi
   log "RUN: $*  (log: $logfile, gpu: ${STAGE_GPU:-unset}, procs: $ngpus)"
   if [ "$ngpus" -gt 1 ]; then
     ( cd "$NANOCHAT_ROOT" \

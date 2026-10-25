@@ -26,7 +26,7 @@ import torch.utils.checkpoint as cp
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, COMPUTE_DTYPE
+from nanochat.common import COMPUTE_DTYPE, DummyWandb, autodetect_device_type, compute_cleanup, compute_init, get_base_dir, print0
 from nanochat.gpt import GPT, GPTConfig, norm
 from nanochat.checkpoint_manager import load_checkpoint, save_checkpoint
 from nanochat.tokenizer import get_tokenizer, get_token_bytes

@@ -42,7 +42,7 @@ import itertools
 import wandb
 import torch
 import torch.distributed as dist
-from nanochat.common import compute_init, compute_cleanup, print0, get_base_dir, DummyWandb, autodetect_device_type
+from nanochat.common import DummyWandb, autodetect_device_type, compute_cleanup, compute_init, get_base_dir, print0
 from nanochat.checkpoint_manager import save_checkpoint, load_model
 from nanochat.engine import Engine
 from tasks.agentic import AgenticSandbox, FAMILIES, stable_seed

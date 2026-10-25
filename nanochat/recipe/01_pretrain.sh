@@ -168,9 +168,29 @@ if [ "$NGPUS" -gt 1 ]; then
   # This was a latent bug in this script -- the multi-GPU branch had never
   # actually executed. The 4-GPU run that produced the served model was
   # launched by hand, with the separator, from the shell.
+  #
+  # GPU HEALTH GATE
+  # ---------------
+  # If the NVIDIA driver is in a fault state, torch.cuda.is_available() is
+  # False and the trainer SILENTLY FALLS BACK TO THE CPU. On 2026-10-24
+  # that turned "the driver died" into "the run is on the CPU, making no
+  # progress, for 15.6 hours". Check the driver before starting.
+  if ! gpus_healthy; then
+    log "FATAL: the NVIDIA driver is not healthy -- refusing to start stage 1."
+    log "       nvidia-smi -L reports 'Unknown Error' or 'No devices were found'."
+    log "       This is a HOST-level fault and needs a driver reload or node reset."
+    die "no usable GPU"
+  fi
   run_pretrain "$PY" -m torch.distributed.run --standalone \
                --nproc_per_node="$NGPUS" -m scripts.base_train --
 else
+  # Same gate for the single-GPU path.
+  if ! gpus_healthy; then
+    log "FATAL: the NVIDIA driver is not healthy -- refusing to start stage 1."
+    log "       nvidia-smi -L reports 'Unknown Error' or 'No devices were found'."
+    log "       This is a HOST-level fault and needs a driver reload or node reset."
+    die "no usable GPU"
+  fi
   run_pretrain "$PY" -m scripts.base_train
 fi
 rc=$?
