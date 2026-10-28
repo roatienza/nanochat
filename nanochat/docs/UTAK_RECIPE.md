@@ -110,12 +110,21 @@ belongs to the change.
 
 ### The full served chain, checkpoint to checkpoint
 
+The "Step" column is the step the stage PRODUCED, and the "Built from"
+column is the step it READS. For the stages whose step count depends on
+the data, these are written down by the stage that produced them, in a
+handoff record under `_handoff/<tag>.step`, and read by the next stage.
+They are not constants: the tool-calling SFT stopped at 13,650 on the
+re-rendered corpus and 13,630 on the original one, and the GSM8K warmup
+at 507 rather than 509. The values below are what the live run produced
+on 2026-10-28.
+
 | Recipe tag | Original tag | Built from | Step | Context | Iters |
 |---|---|---|---|---|---|
 | `utak-base` | `d28b-v2` | — (pretrain) | 277,760 | 2,048 | — |
-| `utak-sft-tools` | `d28b-v2` (sft) | `utak-base` @ 277,760 | 13,630 | 2,048 | 1 epoch |
-| `utak-warmup` | `d28b-warmup` | `utak-sft-tools` @ 13,630 | 509 | 2,048 | 509 |
-| `utak-rl-warmup` | `chatrl/d28b-warmup` | `utak-warmup` @ 509 | 100 | 2,048 | 467 |
+| `utak-sft-tools` | `d28b-v2` (sft) | `utak-base` @ 277,760 | 13,650 | 2,048 | 1 epoch |
+| `utak-warmup` | `d28b-warmup` | `utak-sft-tools` @ 13,650 | 507 | 2,048 | 507 |
+| `utak-rl-warmup` | `chatrl/d28b-warmup` | `utak-warmup` @ 507 | 100 | 2,048 | 101 (capped) |
 | `utak-rl-pilot` | `chatrl/d28b-rl100` (pilot) | `utak-rl-warmup` @ 100 | 177 | 2,048 | 178 |
 | `utak-rl` | `chatrl/d28b-rl100` | `utak-rl-pilot` @ 177 | 177 | 2,048 | 178 |
 | `utak-128k` | `d28b-128k` | `utak-rl` @ 177 | 1,750 | 131,072 | 2,000 |
@@ -240,7 +249,7 @@ checkpoint metadata of the original run:
 `--device-batch-size 2`, `--total-batch-size 32768`, `--init-lr-frac 0.8`,
 `--load-optimizer 1`, `--num-iterations -1` (one epoch over the mixture).
 
-Output: `chatsft_checkpoints/utak-sft-tools` @ 13,630.
+Output: `chatsft_checkpoints/utak-sft-tools` @ 13,650.
 
 ---
 
@@ -273,7 +282,7 @@ The narrow mixture trades breadth for the ability to be rewarded. The
 ChatCORE change is inside the noise band (an adjacent checkpoint swung
 0.0011 → 0.0485).
 
-Output: `chatsft_checkpoints/utak-warmup` @ 509.
+Output: `chatsft_checkpoints/utak-warmup` @ 507.
 
 ---
 
@@ -373,6 +382,70 @@ long-context stage builds on.**
 The original lineage therefore hard-linked each RL output forward into the
 `chatsft` tree under the next tag. The recipe does the same with
 `cp -al` (hard links: no disk, no copy time).
+
+---
+
+## 7a. The step contract — how a stage learns which step to read
+
+This is the part of the recipe that was rewritten on 2026-10-28, after the
+run spent three cycles restarting the same stage for eleven hours each.
+
+**The problem.** A stage's final step is not always a property of the
+recipe. The SFT stages stop when the dataloader is exhausted, so the step
+they reach is a property of the CORPUS. The corpus was re-rendered on
+2026-10-22, which made the tool-calling mixture 320 rows larger, so
+stage 2 stopped at step **13,650** instead of the 13,630 the original
+run reached. Stage 3 then asked for `model_013630.pt`, which does not
+exist, and died.
+
+Worse, `recipe/resume_point.sh` asked the same question in reverse —
+"is there a `model_013630.pt`?" — found none, concluded that stage 2 was
+*incomplete*, and sent the watcher back to stage 2. Ten and a half hours
+later, stage 2 had produced 13,650 again, stage 3 died again, and the
+cycle repeated. Three times over, about thirty-two hours of both GPUs.
+
+**The fix.** A stage's step is an OUTPUT of the stage that produces it.
+
+- After its trainer exits 0, each stage writes a **handoff record**:
+  the step it finished at, in `_handoff/<tag>.step`. The write is atomic
+  (temp file plus rename), so a reader never sees a half-written record.
+- The next stage reads that record instead of a constant.
+- `recipe/resume_point.sh` reads the same records, through the same
+  functions.
+
+Because the consumer and the resume logic ask the question through the
+same helper, they cannot disagree — and that disagreement was what turned
+one missing file into an infinite loop.
+
+**Why a record and not "a checkpoint exists".** A checkpoint does not
+mean a stage finished. Stage 1 saves every 5,000 steps, so a pretrain
+killed at step 27,299 leaves `model_025000.pt` and `model_027000.pt`
+behind; the old logic called that "stage 1 done" and restarted at stage
+2, which then failed for want of `model_277760.pt`. The record is
+written only when the trainer has exited 0, so its presence is proof of
+completion as well as a number.
+
+**The two kinds of link.**
+
+- *Dynamic* — the step is the producer's own final step: 2→3, 3→4, 4→5,
+  5→6, 6→7. The record is authoritative.
+- *Fixed* — the link names a deliberate step, so the constant is
+  authoritative: 7a→7b reads stage 7a's step 1,750 (a mid-run pick, not
+  its final 2,000), and 7b→8, 8→9 and the 9 ladder are fixed by their
+  `--num-iterations`.
+
+**The checkpoint is a set, not a file.** The loader reads `model_*.pt`
+*and* `meta_*.json`, so the resolver links both. Linking only the model
+left stage 5 dying fifteen seconds in with a missing meta file; that is
+pinned by a test now.
+
+**One thing not to "fix".** The constants in `recipe/config.sh` still
+hold the legacy values (13,630 and 509). They are the FALLBACK for
+dynamic links — what the chain did on the original corpus — and the
+records override them. Editing a constant to the live value would
+re-create exactly the drift that caused the failure: the next corpus
+change would move the step again, and the constant would be wrong
+again, silently.
 
 ---
 

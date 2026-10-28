@@ -153,6 +153,37 @@ Four defects, fixed in commit `c222ea3`:
 The topology check is one `nvidia-smi topo -m` parse; without it, a
 free-node moment can silently cost 4x.
 
+## 8. The disk guard, and the hardlink trap
+
+`recipe/prune_checkpoints.sh` is the only thing between this run and
+ENOSPC, and it has a trap that the obvious test does not catch.
+
+The recipe stages a checkpoint tree with `cp -al`, which makes **hard
+links**: the staged directory and the canonical directory share one
+inode. Deleting the model file from the canonical side therefore frees
+**nothing** — the bytes stay on disk because the staged twin still holds
+the inode. Measured on 2026-10-28 with a scratch tree of 4 × 20 MB
+files: the pruner reported `pruned 3 files (57 MB)`, the pair still used
+the same 78,140 KB, and the twin's file still had its full 20,000,000
+bytes. `rm` succeeded; the bytes did not go.
+
+Two things follow, and both are now done:
+
+1. The pruner removes the **name** from every tree that holds the same
+   inode, so the space actually comes back. It only ever removes a name
+   that points at an inode it is already deleting, so it cannot destroy
+   a checkpoint a later stage still needs: the inode *is* the file.
+2. The watcher's prune list must include the **staged** trees, not only
+   the canonical ones. Without them the pruner frees nothing at all.
+
+`tests/test_prune_checkpoints.sh` covers the hardlink case, the keep-N
+rule, the minimum age, the metadata, and the live tree.
+
+**How much it matters.** `base_checkpoints/utak-base` alone was 736 GB:
+54 pretrain checkpoints, none of which any stage after stage 2 needs.
+Pruning it to the newest 3 reclaimed **711 GB** and took `/data` from
+89 % to 84 %. The resume point (step 277,760) is in the kept set.
+
 ## References
 
 * `recipe/ops/start_pipeline.sh` -- resume from the stage contract
