@@ -208,10 +208,17 @@ while true; do
   fi
   log "the driver is healthy; proceeding with the restart."
 
-  # Refresh the handoff records from what is on the disk, before asking
-  # where to resume. A stage that ran under the OLD code (before the
-  # records existed) has no record, and this is what gives it one.
-  bash "$NANOCHAT/recipe/record_handoffs.sh" 2>/dev/null | sed 's/^/    /' || true
+  # Check the handoff records against the disk, before asking where to
+  # resume. This does NOT write records: a record may only be written by
+  # the stage that produced it, when it finishes, because a checkpoint
+  # alone does not mean a stage finished (stage 3 saves every 100 steps).
+  #
+  # The only records that exist for the live run are for the stages that
+  # finished before the records were introduced (stages 1 and 2); they
+  # were backfilled by hand, and this check is what confirms they still
+  # agree with the checkpoints.
+  bash "$NANOCHAT/recipe/record_handoffs.sh" --verify 2>&1 \
+    | grep -v '^/proc' | sed 's/^/    /' || true
 
   # ---- NO-PROGRESS GUARD ------------------------------------------------
   # Where would this restart land? If it lands on the same stage that

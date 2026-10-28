@@ -518,6 +518,56 @@ def test_the_math_rl_budget_lands_on_the_legacy_checkpoint():
     )
 
 
+def test_a_checkpoint_alone_never_writes_a_handoff_record():
+    """Only a stage that FINISHED may have a record -- never a checkpoint.
+
+    Stage 3 saves every 100 steps, so while it runs its output directory
+    holds model_000100.pt, model_000200.pt and so on. A record derived
+    from "the highest checkpoint" would name one of those, and the next
+    stage would then train on a HALF-TRAINED model while believing the
+    stage was done.
+
+    That is the same class of bug as the one this whole mechanism exists
+    to kill, so the record-writing helper must refuse to guess.
+    """
+    src = _script("record_handoffs.sh")
+    # The backfill path must REFUSE when the stage's trainer is running.
+    assert "stage_is_running" in src, (
+        "record_handoffs.sh must know whether the stage is still running"
+    )
+    assert "REFUSING" in src, (
+        "record_handoffs.sh must refuse to backfill a stage that is still "
+        "running: its newest checkpoint is a periodic save, not the final "
+        "one."
+    )
+    # And the plain verify path must not write anything at all.
+    body = src.split('if [ "$MODE" = "backfill" ]; then')[-1]
+    tail = body.split("fi\n\n# ---- verify")[-1]
+    assert "handoff_write" not in tail, (
+        "the verify path of record_handoffs.sh must never write a record: a "
+        "checkpoint does not mean a stage finished."
+    )
+
+
+def test_the_live_records_agree_with_the_checkpoints():
+    """Each record must name a checkpoint that is really there.
+
+    A record that names a missing checkpoint is worse than no record: the
+    consuming stage would die on the missing file twenty minutes in.
+    """
+    for tag, rel in LIVE.items():
+        step = _handoff_step(tag)
+        if step is None:
+            continue
+        have = _steps(rel)
+        if not have:
+            continue
+        assert step in have, (
+            f"the handoff record for {tag} names step {step}, but {rel} "
+            f"holds steps {sorted(have)}."
+        )
+
+
 def test_the_final_served_checkpoint_step():
     """Stage 9's last output is what stage 10 packs and stage 11 serves."""
     have = _steps(ORIG["touch_b"])
