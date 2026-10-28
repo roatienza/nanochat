@@ -568,6 +568,43 @@ def test_the_live_records_agree_with_the_checkpoints():
         )
 
 
+def test_the_agentic_stages_land_on_the_legacy_checkpoint():
+    """Stages 5 and 6 must end at the step the legacy chain read: 177.
+
+    The agentic task set is 5 families x 3 levels x 200 instances, and
+    the tail 5% of each block is reserved for eval, so the train set is
+    2,850 instances. At 16 examples per step that is 178 optimizer
+    steps, and the steps are 0-indexed, so the last one is 177 -- which
+    is exactly the model_000177.pt the legacy chain's stage 6 and stage 7
+    both read.
+    """
+    legacy = os.path.join(BASE, "chatrl_checkpoints", "d28b-rl100")
+    have = _steps(legacy)
+    if not have:
+        pytest.skip(f"{legacy} is not on this machine")
+    assert 177 in have, (
+        f"the legacy agentic output should hold step 177, has {sorted(have)}"
+    )
+
+    # The arithmetic, from the flags the recipe passes.
+    families, levels, ipl, frac = 5, 3, 200, 0.05
+    train = families * levels * int(ipl * (1 - frac))
+    num_steps = (train // 16) * 1
+    assert num_steps - 1 == 177, (
+        f"the agentic stages would end at step {num_steps - 1}, but the "
+        f"legacy chain reads step 177. The task set or the example count "
+        f"must have changed."
+    )
+
+    # And neither stage may be capped: the legacy run was not.
+    for script in ("05_rl_agentic.sh", "06_rl_curriculum.sh"):
+        s = _script(script)
+        assert "--max-steps" not in s, (
+            f"{script} must not cap its steps: the legacy run ran the whole "
+            f"agentic task set, and a cap would change the trajectory."
+        )
+
+
 def test_the_final_served_checkpoint_step():
     """Stage 9's last output is what stage 10 packs and stage 11 serves."""
     have = _steps(ORIG["touch_b"])
