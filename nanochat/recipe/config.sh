@@ -647,14 +647,32 @@ stage_read_step() {
   else
     step="$constant"
   fi
-  file="model_$(printf '%06d' "$step").pt"
-  if [ ! -f "$read_dir/$file" ] && [ -f "$canonical_dir/$file" ]; then
-    log "    linking $canonical_dir/$file -> $read_dir/$file"
-    mkdir -p "$read_dir"
-    ln -f "$canonical_dir/$file" "$read_dir/$file" 2>/dev/null || true
-  fi
-  if [ ! -f "$read_dir/$file" ]; then
-    log "FATAL: $read_dir/$file does not exist (step $step)."
+  # The checkpoint is a SET, not one file: the loader reads model_*.pt AND
+  # meta_*.json, and the optimizer shards too when the stage resumes with
+  # its optimizer. Linking only the model file leaves a stage that dies on a
+  # missing meta -- which is exactly what happened to stage 5 on
+  # 2026-10-28, 15 seconds into the stage.
+  #
+  # So link the WHOLE set. And do it in a way that cannot be defeated by
+  # the order the stage script does things in: the read directory is
+  # created here if it is missing, and every file of the set is linked
+  # from the canonical directory, so this works whether the caller has
+  # already staged the tree with `cp -al` or has not staged it yet.
+  local f base
+  base="model_$(printf '%06d' "$step")"
+  mkdir -p "$read_dir"
+  for f in "$base.pt" "meta_$(printf '%06d' "$step").json" \
+           "optim_$(printf '%06d' "$step")_rank"*.pt; do
+    # A glob that matches nothing must not be taken literally.
+    case "$f" in *'*'*) [ -e "$canonical_dir/$f" ] || continue ;; esac
+    if [ ! -f "$read_dir/$f" ] && [ -f "$canonical_dir/$f" ]; then
+      log "    linking $canonical_dir/$f -> $read_dir/$f"
+      ln -f "$canonical_dir/$f" "$read_dir/$f" 2>/dev/null || true
+    fi
+  done
+  if [ ! -f "$read_dir/$base.pt" ] || [ ! -f "$read_dir/meta_$(printf '%06d' "$step").json" ]; then
+    log "FATAL: the checkpoint set for step $step is not complete in $read_dir"
+    log "       (need $base.pt and meta_$(printf '%06d' "$step").json)."
     log "       The link from '$tag' is broken; refusing to start the stage."
     return 1
   fi

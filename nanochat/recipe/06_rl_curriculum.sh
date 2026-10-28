@@ -40,6 +40,21 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 log "=== Stage 6: curriculum RL -> $TAG_RL @ 177 ==="
 STAGE_GPU="${GPU_SFT}"
+
+# The curriculum run continues from the pilot's final checkpoint. It reads
+# chatsft_checkpoints/<model-tag> and writes chatrl_checkpoints/<model-tag>,
+# so the pilot's output is staged into the chatsft tree under the final tag.
+# STAGING FIRST: the step resolution below links the checkpoint set into
+# the read directory, and on 2026-10-28 it ran before this block, so it
+# linked into a directory that did not exist yet and the stage would have
+# died 15 seconds in on a missing meta file. Stage 04 already had the
+# order right.
+if [ ! -d "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL" ]; then
+  log "staging chatrl/$TAG_RL_PILOT -> chatsft/$TAG_RL"
+  cp -al "$NANOCHAT_BASE_DIR/chatrl_checkpoints/$TAG_RL_PILOT" \
+          "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL"
+fi
+
 # A DYNAMIC link: the step comes from stage 5's handoff record.
 STEP_RL_PILOT="$(stage_read_step "$TAG_RL_PILOT" \
   "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL" \
@@ -47,15 +62,6 @@ STEP_RL_PILOT="$(stage_read_step "$TAG_RL_PILOT" \
   "$TAG_RL_PILOT_FINAL_STEP" dynamic)" \
   || die "cannot establish the step to read from stage 5"
 log "    source: rl/$TAG_RL_PILOT @ $STEP_RL_PILOT"
-
-# The curriculum run continues from the pilot's final checkpoint. It reads
-# chatsft_checkpoints/<model-tag> and writes chatrl_checkpoints/<model-tag>,
-# so the pilot's output is staged into the chatsft tree under the final tag.
-if [ ! -d "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL" ]; then
-  log "staging chatrl/$TAG_RL_PILOT -> chatsft/$TAG_RL"
-  cp -al "$NANOCHAT_BASE_DIR/chatrl_checkpoints/$TAG_RL_PILOT" \
-          "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL"
-fi
 
 run_mod "$LOG_DIR/stage6_rl_curriculum.log" scripts.chat_rl_curriculum \
   --run "utak-rl-curriculum" \

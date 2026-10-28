@@ -26,23 +26,52 @@
 #   - the newest set is never deleted, whatever the settings.
 #
 # Usage:
-#   ./recipe/prune_checkpoints.sh <dir> [keep_n] [min_age_seconds]
+#   ./recipe/prune_checkpoints.sh <dir>
 #
 #   keep_n          how many of the newest checkpoint sets to keep (default 3)
 #   min_age_seconds how old a file must be before it may be deleted
 #                   (default 600)
+#
+# THE HARDLINK PROBLEM
+# --------------------
+# The recipe stages a checkpoint tree with `cp -al`, which makes HARD
+# LINKS: the staged directory and the canonical directory share one
+# inode. Deleting the model file from the CANONICAL directory therefore
+# frees NOTHING -- the bytes stay on disk because the staged twin still
+# holds the inode. A scratch test on 2026-10-28: 4 x 20 MB files,
+# `cp -al` to a twin, then prune the canonical side keeping 1. The
+# pruner reported "pruned 3 files (57 MB)", but the pair still used the
+# same 78,140 KB, and the twin's file still had its full 20,000,000
+# bytes. The pruner cannot see this on its own: `rm` succeeds, the bytes
+# do not go.
+#
+# So the pruner also removes the NAME from every other directory that
+# holds the same inode. It only ever removes a name that points at an
+# inode it is already deleting, so it cannot destroy a checkpoint some
+# other stage still needs: the inode IS the file, and the steps being
+# removed are the ones below the keep count in BOTH trees (they are the
+# same steps, because the trees are copies of each other).
 set -u
 
 DIR="${1:-}"
 KEEP="${2:-3}"
 MIN_AGE="${3:-600}"
+# Where the hardlink twins live. All the staged trees are under here.
+TREE="${NANOCHAT_BASE_DIR:-/data/rowel/nanochat_store/v2}"
 
 if [ -z "$DIR" ] || [ ! -d "$DIR" ]; then
-  echo "usage: $0 <dir> [keep_n] [min_age_seconds]" >&2
+  echo "usage: $0 <dir>  " >&2
   exit 2
 fi
 
 now=$(date +%s)
+
+# Every path under the tree that holds the same inode as a given file.
+# The same inode means the same bytes on disk, so removing the name in
+# one place and the name in the other place are the same deletion.
+twin_paths() {
+  find "$TREE" -inum "$1" -type f 2>/dev/null
+}
 
 # The checkpoint steps, NEWEST first.
 steps=$(ls -1 "$DIR"/model_*.pt 2>/dev/null \
@@ -71,9 +100,18 @@ for step in $steps; do
     age=$((now - mtime))
     [ "$age" -lt "$MIN_AGE" ] && continue
     size=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    ino=$(stat -c %i "$f" 2>/dev/null || echo 0)
     if rm -f "$f"; then
       removed=$((removed + 1))
       freed=$((freed + size))
+      # The bytes are still on disk if a staged twin holds the inode.
+      # Remove that name too, so the space actually comes back.
+      if [ -n "$ino" ] && [ "$ino" != "0" ]; then
+        for twin in $(twin_paths "$ino"); do
+          [ "$twin" = "$f" ] && continue
+          rm -f "$twin" 2>/dev/null && true
+        done
+      fi
     fi
   done
 done

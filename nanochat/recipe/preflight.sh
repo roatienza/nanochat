@@ -36,9 +36,14 @@ fail() { printf '[%s] FAIL: %s\n' "$(date '+%F %T')" "$*"; FAILED=$((FAILED+1));
 
 # The scratch directory is created first, because the contract check below
 # writes its log into it.
-SCRATCH="${PREFLIGHT_DIR:-/tmp/utak-preflight}"
-rm -rf "$SCRATCH"
-mkdir -p "$SCRATCH/model"
+#
+# It is PER-RUN, not shared: `rm -rf` followed by `mkdir -p` is two
+# operations, and a second pre-flight running at the same time can remove
+# the dir in between. On 2026-10-28 that turned into six "FAIL: the test
+# suite fails" messages that had nothing to do with the tests.
+SCRATCH="${PREFLIGHT_DIR:-/tmp/utak-preflight}.$$"
+mkdir -p "$SCRATCH/model" || { echo "cannot create the scratch dir $SCRATCH" >&2; exit 1; }
+trap 'rm -rf "$SCRATCH"' EXIT
 
 # ---------------------------------------------------------------------------
 # 1. The step contract

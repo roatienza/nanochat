@@ -687,7 +687,73 @@ def test_resume_point_reports_a_stage_that_exists():
     assert 1 <= int(tail) <= 9, f"resume_point.sh printed {tail}"
 
 
+def test_the_stages_stage_the_read_tree_before_resolving_the_step():
+    """A stage must stage its read tree BEFORE it resolves the step.
+
+    On 2026-10-28 stage 5 died 15 seconds in: it resolved the step first,
+    which linked the checkpoint into a read directory that did not exist
+    yet, and then the trainer could not find the metadata. The fix is the
+    ORDER, and the order is not visible in the output -- so it is pinned
+    here, for every stage that both stages a tree and resolves a step.
+    """
+    for name in ("02_sft_tools.sh", "03_warmup.sh", "04_rl_math.sh",
+                 "05_rl_agentic.sh", "06_rl_curriculum.sh"):
+        s = _script(name)
+        if "cp -al" not in s:
+            continue
+        stage_at = s.index("cp -al")
+        read_at = s.find("stage_read_step")
+        assert read_at != -1, (
+            f"{name} stages a tree but never resolves a step"
+        )
+        assert stage_at < read_at, (
+            f"{name} resolves the step before it stages the read tree. "
+            f"The resolver links the checkpoint into the read directory, "
+            f"so it must come after the staging, or the stage dies on a "
+            f"missing file."
+        )
+
+
+def test_the_resolver_links_the_whole_checkpoint_set():
+    """The resolver must bring the META file as well as the model.
+
+    The loader reads model_*.pt and meta_*.json. Linking only the model
+    produces a read tree that looks complete and is not: stage 5 died
+    exactly that way on 2026-10-28. The check is behavioural -- it runs
+    the resolver against a scratch directory and looks at what it left.
+    """
+    cfg = os.path.join(RECIPE, "config.sh")
+    if not os.path.exists(cfg):
+        pytest.skip("config.sh is not in this tree")
+    script = r'''
+set -u
+. "%s"
+T=$(mktemp -d)
+step=$(stage_read_step "utak-rl-warmup" "$T/read" \
+        "$NANOCHAT_BASE_DIR/chatrl_checkpoints/utak-rl-warmup" "100" dynamic)
+printf 'STEP=%%s\n' "$step"
+ls -1 "$T/read" 2>/dev/null
+rm -rf "$T"
+''' % cfg
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    names = out.stdout.split()
+    if "STEP=" not in out.stdout:
+        pytest.skip("the live stage 4 output is not on this machine")
+    step = out.stdout.split("STEP=")[1].split()[0]
+    want_model = "model_%06d.pt" % int(step)
+    want_meta = "meta_%06d.json" % int(step)
+    assert want_model in names, (
+        f"the resolver did not link {want_model}; it left {names}"
+    )
+    assert want_meta in names, (
+        f"the resolver linked {want_model} but NOT {want_meta}. A stage "
+        f"that reads this tree dies on the missing metadata -- which is "
+        f"what happened to stage 5 on 2026-10-28."
+    )
+
+
 if __name__ == "__main__":
+
     # Running this file directly used to do NOTHING (no __main__ block),
     # and recipe/preflight.sh ran it that way -- so the contract check was
     # a no-op that always passed. pytest is what actually executes the
