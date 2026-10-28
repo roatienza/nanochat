@@ -180,18 +180,55 @@ def _script(name):
 # 1. The live run
 # ---------------------------------------------------------------------------
 
+def _stage_is_running(tag):
+    """Is the trainer that PRODUCES this tag running right now?
+
+    A stage that is RUNNING has written checkpoints but not its handoff
+    record yet -- the record is written when the stage finishes. Such a
+    stage is legitimately incomplete, and the resume logic is right to
+    treat it as such.
+
+    The match is on the tag as the trainer's OWN --model-tag or
+    --output-tag. A stage that merely READS a checkpoint with that tag in
+    it is a different stage and must not exempt this one.
+    """
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return False
+    needles = ("--model-tag %s " % tag, "--output-tag %s " % tag,
+               "--model-tag %s\x00" % tag, "--output-tag %s\x00" % tag)
+    for e in entries:
+        if not e.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % e, "rb") as fh:
+                cmd = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        cmd = cmd.replace("\x00", " ")
+        if any(n in cmd for n in needles):
+            return True
+    return False
+
+
 def test_every_finished_live_stage_has_a_handoff_record():
-    """A stage that has produced its final checkpoint must have a record.
+    """A stage that has FINISHED must have a record.
 
     The record is the completion signal: it is written only after the
     stage's training command exits 0. Without it, the next stage cannot
     know which step to read and refuses to start.
+
+    A stage that is still RUNNING is exempt: it has written checkpoints
+    but not its record yet, and that is correct -- it is not finished.
     """
     for tag, rel in LIVE.items():
         have = _steps(rel)
         if not have:
             continue  # this stage has not run yet
         step = _handoff_step(tag)
+        if step is None and _stage_is_running(tag):
+            continue  # still running: it will record when it finishes
         assert step is not None, (
             f"{tag} has checkpoints at steps {sorted(have)} but no handoff "
             f"record in {HANDOFF}. The next stage would refuse to start, "
