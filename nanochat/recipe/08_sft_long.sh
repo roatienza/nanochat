@@ -49,13 +49,35 @@ STEP_LONGC_FINAL="$(stage_read_step "$TAG_LONGC_FINAL" \
 log "    source: base/$TAG_LONGC_FINAL @ $STEP_LONGC_FINAL"
 
 # --- the first 100 iterations --------------------------------------------
+# The step budget: 8a stops at step 100, which is the step 8b resumes
+# from.
+#
+# WITHOUT the budget, 8a runs the whole 800-step schedule and then 8b
+# runs 101..800 again, so steps 101..800 are trained TWICE -- 1,500 steps
+# where the original did 800. At the original's own step time (~23.4s,
+# from its meta timestamps) the duplicate 700 steps are ~4.6 hours of a
+# GPU.
+#
+# The original's own checkpoints say what it did: in
+# chatsft_checkpoints/d28b-128k-sft-v5, meta_000100.json has no
+# resume_step -- that run was INTERRUPTED at 100 -- and meta_000200 ..
+# meta_000800 all have resume_step=100. So the original trained 0..100
+# once, then 101..800 once. This reproduces that.
+#
+# --max-steps caps the COMPUTE and leaves the SCHEDULE alone: the
+# learning rate still follows the full 800-step warmdown, so the
+# trajectory at step 100 is the one the original had. Using
+# --num-iterations 100 instead would be a DIFFERENT run: the warmdown is
+# computed from --num-iterations, so the learning rate would decay to
+# zero over 100 steps instead of being near its peak -- and 8b would
+# then resume from a model trained on a decayed schedule.
 run_mod "$LOG_DIR/stage8a_sft_long.log" scripts.chat_sft_long \
   --run "utak-sft-long" \
   --source-phase base --model-tag "$TAG_LONGC_FINAL" --model-step "$STEP_LONGC_FINAL" \
   --output-tag "$TAG_SFT" \
   --max-seq-len 131072 --short-window 512 \
   --device-batch-size 1 --total-batch-size 131072 \
-  --num-iterations 800 \
+  --num-iterations 800 --max-steps 100 \
   --longctx-epochs 20 --levels 0,1,2,3 --instances-per-level 2000,1000,500,250 \
   --toolcall-epochs 2 --toolace-epochs 2 \
   --smoltalk-epochs 1 \

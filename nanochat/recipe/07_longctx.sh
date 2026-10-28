@@ -36,13 +36,31 @@ STEP_RL="$(stage_read_step "$TAG_RL" \
 log "    source: rl/$TAG_RL @ step $STEP_RL  ->  131072 ctx"
 
 # ---- 7a: the main long-context pass -------------------------------------
+#
+# The step budget: 7a stops at step 1,750, which is the step 7b reads.
+#
+# 7a's schedule is 2,000 iterations, and the original run's 7a was
+# interrupted at exactly 1,750 -- its directory holds metas 250..1,750
+# and no meta_002000, because the original's save-before-the-break
+# ordering never wrote the final checkpoint. So the original computed
+# steps 1,751..2,000 and threw them away, and the recipe was going to do
+# the same: 250 steps at ~24.4s (the original's own step time, from the
+# meta timestamps) is ~1.7 hours of one GPU to produce a checkpoint
+# nothing reads.
+#
+# --max-steps caps the COMPUTE and leaves the SCHEDULE alone: the
+# learning rate still follows the full 2,000-step warmdown, so the
+# trajectory is the one the original had at step 1,750. Using
+# --num-iterations 1750 instead would be a different run: the warmdown
+# is computed from --num-iterations, so the learning rate would be
+# ~5x lower at every step.
 run_mod "$LOG_DIR/stage7a_longctx.log" scripts.base_train_long \
   --run "utak-longctx" \
   --source-phase rl --model-tag "$TAG_RL" --model-step "$STEP_RL" \
   --output-tag "$TAG_LONGC" \
   --max-seq-len 131072 --short-window 512 \
   --device-batch-size 1 --total-batch-size 262144 \
-  --num-iterations 2000 \
+  --num-iterations 2000 --max-steps 1750 \
   --embedding-lr 0.09 --unembedding-lr 0.0024 \
   --matrix-lr 0.006 --scalar-lr 0.15 \
   --weight-decay 0.028 \

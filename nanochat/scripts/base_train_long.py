@@ -62,6 +62,20 @@ parser.add_argument("--eval-every", type=int, default=100)
 parser.add_argument("--eval-tokens", type=int, default=2*131072)
 parser.add_argument("--save-every", type=int, default=250)
 parser.add_argument("--ce-chunk", type=int, default=4096)
+# A step BUDGET, as opposed to --num-iterations, which is a schedule.
+#
+# --num-iterations sets both how many steps run AND the learning-rate
+# schedule (the warmdown is computed from it), so lowering it to stop
+# early ALSO changes the trajectory.
+#
+# --max-steps caps only the COMPUTE: the loop stops after that many
+# steps, but the learning rate still follows the full --num-iterations
+# schedule. That is the difference that matters when the goal is to
+# reproduce a run that was stopped by hand part way through.
+parser.add_argument("--max-steps", type=int, default=-1,
+    help="stop after this many steps (-1 = run the whole schedule). "
+         "Caps the compute without changing the learning-rate schedule, "
+         "which still follows --num-iterations.")
 args = parser.parse_args()
 
 device_type = autodetect_device_type()
@@ -246,8 +260,25 @@ smooth_train_loss = 0.0
 total_training_time = 0.0
 x, y, dataloader_state_dict = next(train_loader)
 
-for step in range(args.num_iterations + 1):
-    last_step = step == args.num_iterations
+# The step budget. The loop runs 0..num_iterations inclusive, so the
+# schedule is num_iterations steps long and the final step is
+# num_iterations. A budget of N stops the loop at step N, with the
+# learning rate still following the full num_iterations schedule
+# (get_lr_multiplier closes over args.num_iterations, not over the
+# budget).
+#
+# The loop's LAST step must be the budgeted one, so that the final
+# checkpoint is written and the stage's handoff record names it. That is
+# why the comparison is against run_steps and not against
+# num_iterations: a run stopped by hand writes a checkpoint at the step
+# it was stopped at, and the next stage reads THAT.
+run_steps = args.num_iterations if args.max_steps < 0 else min(args.max_steps, args.num_iterations)
+if run_steps != args.num_iterations:
+    print0(f"Step budget: stopping at step {run_steps} of {args.num_iterations} "
+           f"(the learning rate still follows the full {args.num_iterations}-step schedule)")
+
+for step in range(run_steps + 1):
+    last_step = step == run_steps
 
     if args.eval_every > 0 and (last_step or step % args.eval_every == 0):
         model.eval()
@@ -322,8 +353,8 @@ for step in range(args.num_iterations + 1):
     total_training_time += dt if step > 2 else 0
     tok_per_sec = int(args.total_batch_size / dt)
     if step % 10 == 0:
-        eta_min = (args.num_iterations - step) * dt / 60
-        print0(f"Step {step:05d}/{args.num_iterations} | loss {smooth_train_loss:.4f} | {tok_per_sec:,} tok/s | {dt:.1f}s/step | ETA {eta_min:.0f} min | mem {torch.cuda.max_memory_allocated()/1e9:.1f} GB")
+        eta_min = (run_steps - step) * dt / 60
+        print0(f"Step {step:05d}/{run_steps} | loss {smooth_train_loss:.4f} | {tok_per_sec:,} tok/s | {dt:.1f}s/step | ETA {eta_min:.0f} min | mem {torch.cuda.max_memory_allocated()/1e9:.1f} GB")
     wandb_run.log({"step": step, "train/loss": smooth_train_loss, "tok/s": tok_per_sec})
 
 
