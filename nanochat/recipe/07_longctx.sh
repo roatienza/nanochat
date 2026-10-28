@@ -26,12 +26,19 @@ STAGE_GPU="${GPU_LONGC}"
 # The long-context trainers do not reduce gradients across ranks, so
 # they MUST run on a single card. See recipe/config.sh.
 require_single_gpu "07_longctx"
-log "    source: rl/$TAG_RL @ step 177  ->  131072 ctx"
+# 7a reads stage 6's output: a DYNAMIC link, resolved from stage 6's
+# handoff record. See recipe/config.sh, "THE STAGE HANDOFF".
+STEP_RL="$(stage_read_step "$TAG_RL" \
+  "$NANOCHAT_BASE_DIR/chatrl_checkpoints/$TAG_RL" \
+  "$NANOCHAT_BASE_DIR/chatrl_checkpoints/$TAG_RL" \
+  "$TAG_RL_FINAL_STEP" dynamic)" \
+  || die "cannot establish the step to read from stage 6"
+log "    source: rl/$TAG_RL @ step $STEP_RL  ->  131072 ctx"
 
 # ---- 7a: the main long-context pass -------------------------------------
 run_mod "$LOG_DIR/stage7a_longctx.log" scripts.base_train_long \
   --run "utak-longctx" \
-  --source-phase rl --model-tag "$TAG_RL" --model-step 177 \
+  --source-phase rl --model-tag "$TAG_RL" --model-step "$STEP_RL" \
   --output-tag "$TAG_LONGC" \
   --max-seq-len 131072 --short-window 512 \
   --device-batch-size 1 --total-batch-size 262144 \
@@ -46,6 +53,13 @@ run_mod "$LOG_DIR/stage7a_longctx.log" scripts.base_train_long \
 
 # ---- 7b: the anneal ------------------------------------------------------
 # Continues from 7a's own checkpoint and lowers the LR toward zero.
+#
+# The step here is 1,750, which is a deliberate MID-RUN pick inside 7a,
+# not 7a's final step (2,000): 7a saves every 250 steps, so 1,750 is
+# always on disk. The original run made the same pick -- its 7a was
+# interrupted at exactly 1,750, and its 7b resumed from there. So this
+# link is FIXED and is checked against the disk rather than resolved
+# from a handoff record.
 run_mod "$LOG_DIR/stage7b_longctx_anneal.log" scripts.base_train_long \
   --run "utak-longctx-final" \
   --source-phase base --model-tag "$TAG_LONGC" --model-step 1750 \
@@ -61,4 +75,10 @@ run_mod "$LOG_DIR/stage7b_longctx_anneal.log" scripts.base_train_long \
   --ce-chunk 4096 \
 || die "stage 7b failed"
 
-log "Stage 7 complete. Checkpoint: base_checkpoints/$TAG_LONGC_FINAL @ 250"
+# The handoff record: the step stage 7's output reached, for stage 8 to
+# read. Written only after the trainer exited 0.
+record_stage_handoff "$TAG_LONGC_FINAL" \
+  "$NANOCHAT_BASE_DIR/base_checkpoints/$TAG_LONGC_FINAL" \
+  || die "could not record the stage 7 handoff"
+
+log "Stage 7 complete. Checkpoint: base_checkpoints/$TAG_LONGC_FINAL @ $(handoff_read "$TAG_LONGC_FINAL")"

@@ -127,7 +127,13 @@ def test_step_timing_is_reported(rel):
     """
     src = _read(rel)
     assert "rl_t_start = time.time()" in src, f"{rel}: no wall-clock start"
-    assert "step {step}/{num_steps} took" in src, f"{rel}: no per-step timing line"
+    # The step counter in the timing line is the number of steps the run
+    # will actually take: `num_steps` for a run with no budget, or
+    # `run_steps` when a --max-steps budget caps it.
+    assert (
+        "step {step}/{num_steps} took" in src
+        or "step {step}/{run_steps} took" in src
+    ), f"{rel}: no per-step timing line"
     assert "ETA" in src, f"{rel}: no ETA in the timing line"
 
 

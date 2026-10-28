@@ -25,7 +25,13 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 log "=== Stage 5: agentic RL -> $TAG_RL_PILOT ==="
 STAGE_GPU="${GPU_SFT}"
-log "    source: rl/$TAG_RL_WARMUP @ 100"
+# A DYNAMIC link: the step comes from stage 4's handoff record.
+STEP_RL_WARMUP="$(stage_read_step "$TAG_RL_WARMUP" \
+  "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL_PILOT" \
+  "$NANOCHAT_BASE_DIR/chatrl_checkpoints/$TAG_RL_WARMUP" \
+  "$TAG_RL_WARMUP_FINAL_STEP" dynamic)" \
+  || die "cannot establish the step to read from stage 4"
+log "    source: rl/$TAG_RL_WARMUP @ $STEP_RL_WARMUP"
 
 # The pilot's base is the math-RL checkpoint. chat_rl_agentic.py reads
 # chatsft_checkpoints/<model-tag>, so it is staged there.
@@ -37,7 +43,7 @@ fi
 
 run_mod "$LOG_DIR/stage5_rl_agentic.log" scripts.chat_rl_agentic \
   --run "utak-rl-agentic" \
-  --model-tag "$TAG_RL_PILOT" --model-step 100 \
+  --model-tag "$TAG_RL_PILOT" --model-step "$STEP_RL_WARMUP" \
   --num-epochs 1 \
   --device-batch-size 2 --gen-batch-size 16 \
   --examples-per-step 16 --num-samples 16 \
@@ -49,4 +55,10 @@ run_mod "$LOG_DIR/stage5_rl_agentic.log" scripts.chat_rl_agentic \
   --agentic-eval-split-frac 0.05 \
 || die "stage 5 failed"
 
-log "Stage 5 complete. Checkpoint: chatrl_checkpoints/$TAG_RL_PILOT"
+# The handoff record: the step this stage finished at, for stage 6 to
+# read. Written only after the trainer exited 0.
+record_stage_handoff "$TAG_RL_PILOT" \
+  "$NANOCHAT_BASE_DIR/chatrl_checkpoints/$TAG_RL_PILOT" \
+  || die "could not record the stage 5 handoff"
+
+log "Stage 5 complete. Checkpoint: chatrl_checkpoints/$TAG_RL_PILOT @ $(handoff_read "$TAG_RL_PILOT")"

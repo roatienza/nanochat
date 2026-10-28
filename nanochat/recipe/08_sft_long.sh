@@ -37,12 +37,21 @@ STAGE_GPU="${GPU_LONGC}"
 # The long-context trainers do not reduce gradients across ranks, so
 # they MUST run on a single card. See recipe/config.sh.
 require_single_gpu "08_sft_long"
-log "    source: base/$TAG_LONGC_FINAL @ 250"
+# 8 reads 7b's output at step 250. That step is FIXED: 7b runs for
+# exactly 250 iterations, so its final step is 250 by construction. It
+# is still resolved through the same helper, so the file's existence is
+# checked before the stage starts rather than twenty minutes into it.
+STEP_LONGC_FINAL="$(stage_read_step "$TAG_LONGC_FINAL" \
+  "$NANOCHAT_BASE_DIR/base_checkpoints/$TAG_LONGC_FINAL" \
+  "$NANOCHAT_BASE_DIR/base_checkpoints/$TAG_LONGC_FINAL" \
+  "$TAG_LONGC_FINAL_STEP" fixed)" \
+  || die "cannot establish the step to read from stage 7"
+log "    source: base/$TAG_LONGC_FINAL @ $STEP_LONGC_FINAL"
 
 # --- the first 100 iterations --------------------------------------------
 run_mod "$LOG_DIR/stage8a_sft_long.log" scripts.chat_sft_long \
   --run "utak-sft-long" \
-  --source-phase base --model-tag "$TAG_LONGC_FINAL" --model-step 250 \
+  --source-phase base --model-tag "$TAG_LONGC_FINAL" --model-step "$STEP_LONGC_FINAL" \
   --output-tag "$TAG_SFT" \
   --max-seq-len 131072 --short-window 512 \
   --device-batch-size 1 --total-batch-size 131072 \
@@ -63,7 +72,7 @@ run_mod "$LOG_DIR/stage8a_sft_long.log" scripts.chat_sft_long \
 # continuation of the same output tag from its own step-100 checkpoint.
 run_mod "$LOG_DIR/stage8b_sft_long_resume.log" scripts.chat_sft_long \
   --run "utak-sft-long-resume" \
-  --source-phase base --model-tag "$TAG_LONGC_FINAL" --model-step 250 \
+  --source-phase base --model-tag "$TAG_LONGC_FINAL" --model-step "$STEP_LONGC_FINAL" \
   --output-tag "$TAG_SFT" --resume-step 100 \
   --max-seq-len 131072 --short-window 512 \
   --device-batch-size 1 --total-batch-size 131072 \
@@ -79,4 +88,10 @@ run_mod "$LOG_DIR/stage8b_sft_long_resume.log" scripts.chat_sft_long \
   --ce-chunk 4096 \
 || die "stage 8b failed"
 
-log "Stage 8 complete. Checkpoint: chatsft_checkpoints/$TAG_SFT @ 800"
+# The handoff record: the step this stage finished at, for stage 9 to
+# read. Written only after the trainer exited 0.
+record_stage_handoff "$TAG_SFT" \
+  "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_SFT" \
+  || die "could not record the stage 8 handoff"
+
+log "Stage 8 complete. Checkpoint: chatsft_checkpoints/$TAG_SFT @ $(handoff_read "$TAG_SFT")"

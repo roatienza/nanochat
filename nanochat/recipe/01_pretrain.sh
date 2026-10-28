@@ -196,4 +196,10 @@ fi
 rc=$?
 [ $rc -eq 0 ] || { tail -40 "$LOG_DIR/stage1_pretrain.log"; die "stage 1 failed (exit $rc)"; }
 
-log "Stage 1 complete. Checkpoint: base_checkpoints/$TAG_BASE"
+# The handoff record: the step the pretrain finished at, for stage 2 to
+# read. Written only after the trainer exited 0.
+record_stage_handoff "$TAG_BASE" \
+  "$NANOCHAT_BASE_DIR/base_checkpoints/$TAG_BASE" \
+  || die "could not record the stage 1 handoff"
+
+log "Stage 1 complete. Checkpoint: base_checkpoints/$TAG_BASE @ $(handoff_read "$TAG_BASE")"

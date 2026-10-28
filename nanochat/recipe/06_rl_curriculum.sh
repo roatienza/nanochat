@@ -40,7 +40,13 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 log "=== Stage 6: curriculum RL -> $TAG_RL @ 177 ==="
 STAGE_GPU="${GPU_SFT}"
-log "    source: rl/$TAG_RL_PILOT @ 177"
+# A DYNAMIC link: the step comes from stage 5's handoff record.
+STEP_RL_PILOT="$(stage_read_step "$TAG_RL_PILOT" \
+  "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL" \
+  "$NANOCHAT_BASE_DIR/chatrl_checkpoints/$TAG_RL_PILOT" \
+  "$TAG_RL_PILOT_FINAL_STEP" dynamic)" \
+  || die "cannot establish the step to read from stage 5"
+log "    source: rl/$TAG_RL_PILOT @ $STEP_RL_PILOT"
 
 # The curriculum run continues from the pilot's final checkpoint. It reads
 # chatsft_checkpoints/<model-tag> and writes chatrl_checkpoints/<model-tag>,
@@ -53,7 +59,7 @@ fi
 
 run_mod "$LOG_DIR/stage6_rl_curriculum.log" scripts.chat_rl_curriculum \
   --run "utak-rl-curriculum" \
-  --model-tag "$TAG_RL" --model-step 177 \
+  --model-tag "$TAG_RL" --model-step "$STEP_RL_PILOT" \
   --num-epochs 1 \
   --device-batch-size 2 --gen-batch-size 16 \
   --examples-per-step 16 --num-samples 16 \
@@ -68,5 +74,11 @@ run_mod "$LOG_DIR/stage6_rl_curriculum.log" scripts.chat_rl_curriculum \
   --curriculum-seed 7 \
 || die "stage 6 failed"
 
-log "Stage 6 complete. Checkpoint: chatrl_checkpoints/$TAG_RL @ 177"
+# The handoff record: the step this stage finished at, for stage 7 to
+# read. Written only after the trainer exited 0.
+record_stage_handoff "$TAG_RL" \
+  "$NANOCHAT_BASE_DIR/chatrl_checkpoints/$TAG_RL" \
+  || die "could not record the stage 6 handoff"
+
+log "Stage 6 complete. Checkpoint: chatrl_checkpoints/$TAG_RL @ $(handoff_read "$TAG_RL")"
 log "This is the long-context source for stage 7."

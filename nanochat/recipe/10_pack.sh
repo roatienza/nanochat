@@ -22,6 +22,16 @@ log "=== Stage 10: pack $FINAL_TAG @ $FINAL_STEP -> $MODEL_DIR ==="
 [ -d "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$FINAL_TAG" ] \
   || die "no such checkpoint: chatsft_checkpoints/$FINAL_TAG"
 
+# The step to pack. It is the step stage 9's handoff record names -- the
+# step the served checkpoint actually reached. The FINAL_STEP constant is
+# the fallback for output that predates the handoff records.
+FINAL_STEP_RESOLVED="$(stage_read_step "$FINAL_TAG" \
+  "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$FINAL_TAG" \
+  "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$FINAL_TAG" \
+  "$FINAL_STEP" fixed)" \
+  || die "cannot establish the step to pack"
+log "    packing $FINAL_TAG @ $FINAL_STEP_RESOLVED"
+
 mkdir -p "$MODEL_DIR"
 
 log "exporting weights..."
@@ -31,7 +41,7 @@ log "exporting weights..."
        --phase sft \
        --base-dir "$NANOCHAT_BASE_DIR" \
        --tag "$FINAL_TAG" \
-       --step "$FINAL_STEP" \
+       --step "$FINAL_STEP_RESOLVED" \
        --out "$MODEL_DIR" ) > "$LOG_DIR/pack_export.log" 2>&1 \
   || { tail -25 "$LOG_DIR/pack_export.log"; die "export failed"; }
 

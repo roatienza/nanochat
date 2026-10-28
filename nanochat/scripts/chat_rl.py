@@ -85,6 +85,12 @@ parser.add_argument("--model-tag", type=str, default=None, help="model tag to lo
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 # Training horizon
 parser.add_argument("--num-epochs", type=int, default=1, help="number of epochs over GSM8K")
+parser.add_argument("--max-steps", type=int, default=-1,
+    help="stop after this many optimizer steps (-1 = run the whole task set). "
+         "This caps the COMPUTE without changing the schedule: the learning "
+         "rate still ramps down over the full computed num_steps, so the "
+         "trajectory is the same as the original run's, which was stopped by "
+         "hand at the same point.")
 # Batch sizes / sampling
 parser.add_argument("--device-batch-size", type=int, default=8, help="max batch size per forward pass")
 # The GENERATION batch size: how many rollouts are decoded in ONE call.
@@ -169,6 +175,23 @@ train_task = GSM8K(subset="main", split="train")
 val_task = GSM8K(subset="main", split="test")
 num_steps = (len(train_task) // args.examples_per_step) * args.num_epochs
 print0(f"Calculated number of steps: {num_steps}")
+
+# The step budget. When it is set, the run stops after that many optimizer
+# steps, but the LEARNING RATE still ramps down over the full computed
+# num_steps (get_lr_multiplier closes over num_steps, not over the
+# budget). That is deliberate: the original run of this stage was stopped
+# BY HAND at the point where the train reward saturated and the gradient
+# died, and its learning rate had followed the full schedule up to that
+# point. Capping the budget reproduces that run -- same trajectory, same
+# checkpoint -- while making the stop a property of the recipe instead of
+# a decision somebody had to make in the middle of a run.
+#
+# The final checkpoint is then the budget's last step, which is what the
+# next stage reads.
+run_steps = num_steps if args.max_steps < 0 else min(args.max_steps, num_steps)
+if run_steps != num_steps:
+    print0(f"Step budget: stopping at step {run_steps} of {num_steps} "
+           f"(the learning rate still follows the full {num_steps}-step schedule)")
 
 @torch.no_grad()
 def get_batch():
@@ -328,7 +351,7 @@ batch_iterator = get_batch()
 # only way to tell a slow run from a stuck one.
 rl_t_start = time.time()
 rl_t_last = rl_t_start
-for step in range(num_steps):
+for step in range(run_steps):
     step_t0 = time.time()
 
     # Evaluate the model once in a while and log to wandb
@@ -389,9 +412,9 @@ for step in range(num_steps):
         _total_s = _now - rl_t_start
         _done = step + 1
         _mean_s = _total_s / max(_done, 1)
-        _eta_s = _mean_s * max(num_steps - _done, 0)
+        _eta_s = _mean_s * max(run_steps - _done, 0)
         _eta_h = _eta_s / 3600.0
-        print0(f"  step {step}/{num_steps} took {_step_s:.1f}s | total {_total_s/3600.0:.2f}h "
+        print0(f"  step {step}/{run_steps} took {_step_s:.1f}s | total {_total_s/3600.0:.2f}h "
                f"| mean {_mean_s:.1f}s/step | ETA {_eta_h:.1f}h "
                f"| finish {time.strftime('%Y-%m-%d %H:%M', time.localtime(_now + _eta_s))}")
 
@@ -401,9 +424,9 @@ for step in range(num_steps):
         _total_s = _now - rl_t_start
         _done = step + 1
         _mean_s = _total_s / max(_done, 1)
-        _eta_s = _mean_s * max(num_steps - _done, 0)
+        _eta_s = _mean_s * max(run_steps - _done, 0)
         _eta_h = _eta_s / 3600.0
-        print0(f"  step {step}/{num_steps} took {_step_s:.1f}s | total {_total_s/3600.0:.2f}h "
+        print0(f"  step {step}/{run_steps} took {_step_s:.1f}s | total {_total_s/3600.0:.2f}h "
                f"| mean {_mean_s:.1f}s/step | ETA {_eta_h:.1f}h "
                f"| finish {time.strftime('%Y-%m-%d %H:%M', time.localtime(_now + _eta_s))}")
         # For logging
@@ -439,7 +462,7 @@ for step in range(num_steps):
     })
 
     # Master process saves the model once in a while. Skip first step. Save last step.
-    if master_process and ((step > 0 and step % args.save_every == 0) or step == num_steps - 1):
+    if master_process and ((step > 0 and step % args.save_every == 0) or step == run_steps - 1):
         base_dir = get_base_dir()
         depth = model.config.n_layer
         output_dirname = args.model_tag if args.model_tag else f"d{depth}" # base the model tag on the depth of the base model

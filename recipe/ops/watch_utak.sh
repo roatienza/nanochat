@@ -34,6 +34,42 @@ INTERVAL=600
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 
+# ---- THE NO-PROGRESS GUARD ----------------------------------------------
+# A restart that lands on the SAME stage and fails the same way is not
+# progress; it is a loop, and on this recipe it costs 10.6 hours of both
+# GPUs per cycle.
+#
+# That is exactly what happened on 2026-10-27: stage 3 died on a missing
+# model_013630.pt, the resume logic said "stage 2 is unfinished", and the
+# watcher restarted stage 2 -- twice, for 21 hours of both GPUs, to
+# produce a checkpoint that stage 3 could not read either.
+#
+# So the watcher remembers where it last restarted from. If the pipeline
+# dies again and the resume point is the SAME stage, that is the second
+# failure of the same thing; after a few of those it stops restarting and
+# says so loudly, because at that point the problem is a broken stage,
+# and burning the rest of the schedule on retries helps nobody.
+# ---------------------------------------------------------------------------
+MAX_SAME_STAGE_RESTARTS="${MAX_SAME_STAGE_RESTARTS:-3}"
+GUARD_STATE="$WORK/restart_guard.state"
+
+note_restart() {
+  # note_restart <stage>
+  local stage="$1" last count
+  last=""
+  count=0
+  if [ -f "$GUARD_STATE" ]; then
+    read -r last count < "$GUARD_STATE" 2>/dev/null || true
+  fi
+  if [ "$last" = "$stage" ]; then
+    count=$((count + 1))
+  else
+    count=1
+  fi
+  printf '%s %s\n' "$stage" "$count" > "$GUARD_STATE"
+  printf '%s\n' "$count"
+}
+
 log "=== watching the utak run (every ${INTERVAL}s) ==="
 
 while true; do
@@ -171,6 +207,30 @@ while true; do
     continue
   fi
   log "the driver is healthy; proceeding with the restart."
+
+  # ---- NO-PROGRESS GUARD ------------------------------------------------
+  # Where would this restart land? If it lands on the same stage that
+  # just failed, and it has done that several times, the stage is broken
+  # and retrying only burns the schedule.
+  resume_guess="$(bash "$NANOCHAT/recipe/resume_point.sh" 2>/dev/null | tail -1)"
+  case "$resume_guess" in
+    ''|*[!0-9]*) resume_guess="" ;;
+  esac
+  if [ -n "$resume_guess" ]; then
+    tries="$(note_restart "$resume_guess")"
+    if [ "$tries" -gt "$MAX_SAME_STAGE_RESTARTS" ]; then
+      log "FATAL: the pipeline has failed and been restarted ${tries} times"
+      log "       on the SAME stage (${resume_guess}). That is not a flaky"
+      log "       failure; the stage is broken. NOT restarting again --"
+      log "       each attempt costs hours of both GPUs and cannot succeed."
+      log "       The last 30 lines of the log:"
+      tail -30 "$LOG" 2>/dev/null | sed 's/^/    /'
+      log "       Fix the stage, then delete $GUARD_STATE to re-arm the guard."
+      sleep "$INTERVAL"
+      continue
+    fi
+    log "the no-progress guard: this is attempt ${tries} on stage ${resume_guess}"
+  fi
 
   log "clearing any stale GPU holders"
   bash "$WORK/kill_stale.sh" 2>/dev/null | sed 's/^/    /' || true

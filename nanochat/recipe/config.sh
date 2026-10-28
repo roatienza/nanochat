@@ -505,6 +505,181 @@ TAG_RL_FINAL_STEP="${TAG_RL_FINAL_STEP:-177}"          # stage 6 -> stage 7
 TAG_LONGC_FINAL_STEP="${TAG_LONGC_FINAL_STEP:-250}"    # stage 7b -> stage 8
 TAG_SFT_FINAL_STEP="${TAG_SFT_FINAL_STEP:-800}"        # stage 8 -> stage 9
 
+# -----------------------------------------------------------------------
+# THE STAGE HANDOFF: how a stage finds the step to read.
+#
+# The constants above are the ORIGINAL run's steps. They are the FALLBACK
+# for a link whose producer has not written a handoff record, and they are
+# what tests/test_stage_contract.py checks the legacy lineage against.
+# The run's ACTUAL steps are in the handoff records described below.
+#
+# There are two kinds of link.
+#
+#   FIXED     the step is a property of the recipe and does not move:
+#             277760 (the pretrain's final step, which follows from the
+#             MODEL SIZE via --target-param-data-ratio 8.0, not from the
+#             corpus), 1750 (a deliberate mid-run pick inside stage 7),
+#             and 250 / 800 / 120 / 80 / 100 / 60 / 240, which are all
+#             --num-iterations.
+#
+#   DYNAMIC   the step is a property of the DATA and is not knowable
+#             until the producing stage has run: the SFT stages stop when
+#             the dataloader has consumed the mixture, so their final step
+#             follows from the SIZE OF THE CORPUS.
+#
+# WHY A DYNAMIC STEP MUST NOT BE HARDCODED
+# -----------------------------------------
+# It used to be, and it cost two 10.6-hour cycles of both GPUs.
+#
+# Stage 2's final step is 13,650 on the corpus rendered on 2026-10-22.
+# The recipe said 13,630, which was the value for the ORIGINAL run's
+# corpus. Stage 3 therefore asked for model_013630.pt, which does not
+# exist, and died in seconds. Worse, recipe/resume_point.sh asked the
+# SAME question -- "is there a model_013630.pt?" -- and, finding none,
+# concluded that STAGE 2 WAS INCOMPLETE. The watcher then restarted the
+# pipeline at stage 2, which ran for another 10.6 hours to produce
+# model_013650.pt again, at which point stage 3 died the same way. That
+# loop ran twice (2026-10-27 05:37 and 16:21) before it was found.
+#
+# The two questions were the same question asked in two places, and they
+# disagreed with the disk. So the step is now an OUTPUT of the stage that
+# produces it: each stage writes a HANDOFF RECORD -- the step it finished
+# at -- into $HANDOFF_DIR/<tag>.step, and the next stage reads that
+# record. The record is written only after the stage's training command
+# exits 0, so its presence also proves the stage FINISHED. ("A checkpoint
+# exists" does not: stage 1 saves every 5,000 steps, so a pretrain that
+# died at step 27,299 leaves checkpoints behind.)
+#
+# The consumer and the resume logic now ask the question through the SAME
+# functions, so they cannot disagree again. That disagreement is what
+# turned one missing file into an infinite loop.
+# -----------------------------------------------------------------------
+HANDOFF_DIR="${HANDOFF_DIR:-$NANOCHAT_BASE_DIR/_handoff}"
+
+# The step of the highest model_*.pt in a checkpoint directory.
+stage_dir_final_step() {
+  local dir="$1" newest
+  newest=$(ls -1 "$dir"/model_*.pt 2>/dev/null \
+            | sed -n 's/.*model_\([0-9]\{6\}\)\.pt/\1/p' | sort -n | tail -1)
+  [ -n "$newest" ] || return 1
+  printf '%s\n' "$((10#$newest))"
+}
+
+# Record the step a stage finished at.
+#
+#   handoff_write <tag> <step>
+#
+# Written atomically (temp file + rename) so a reader never sees a
+# half-written record, and so a crash cannot leave a truncated one.
+handoff_write() {
+  local tag="$1" step="$2" tmp
+  case "$step" in
+    ''|*[!0-9]*) log "FATAL: refusing to write a handoff record for $tag: bad step '$step'"; return 1 ;;
+  esac
+  mkdir -p "$HANDOFF_DIR" || return 1
+  tmp="$HANDOFF_DIR/.$tag.step.tmp.$$"
+  printf '%s\n' "$step" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$HANDOFF_DIR/$tag.step"
+}
+
+# The step recorded for a tag. Fails if the stage has not finished.
+handoff_read() {
+  local f="$HANDOFF_DIR/$1.step" step
+  [ -f "$f" ] || return 1
+  step=$(tr -dc '0-9' < "$f")
+  [ -n "$step" ] || return 1
+  printf '%s\n' "$step"
+}
+
+# Record the step a stage finished at.
+#
+#   record_stage_handoff <tag> <output_dir>
+#
+# Called by a stage AFTER its training command has exited 0. The step is
+# the highest model_*.pt in the output directory, which is the stage's last
+# checkpoint -- for a stage that saves periodically as well as at the end,
+# that is the END save, not a periodic one.
+#
+# This is the only place a handoff record is written, and it is only
+# reached when the stage has actually finished. That is what makes the
+# record a completion signal, not just a number.
+record_stage_handoff() {
+  local tag="$1" dir="$2" step
+  if ! step=$(stage_dir_final_step "$dir"); then
+    log "FATAL: no model_*.pt in $dir, so $tag has no step to hand off."
+    return 1
+  fi
+  handoff_write "$tag" "$step" || return 1
+  log "    handoff: $tag finished at step $step (recorded in $HANDOFF_DIR)"
+}
+
+# The step a consumer must read from a producer's output.
+#
+#   stage_read_step <producer_tag> <read_dir> <canonical_dir> <constant> <mode>
+#
+#   read_dir      the tree the consumer's trainer loads from
+#   canonical_dir the tree the producer actually wrote to
+#   constant      the recipe's fallback step for this link
+#   mode          "dynamic" (trust the handoff record) or "fixed"
+#
+# For a dynamic link the HANDOFF RECORD is authoritative: it is what the
+# producing stage really produced. For a fixed link the constant is
+# authoritative, because the link names a deliberate step (stage 7b reads
+# stage 7a's step 1,750, not its final 2,000).
+#
+# The checkpoint must be readable from the tree the consumer loads. The
+# staged copy is a SNAPSHOT, taken once, so if the producer has moved on
+# since, the file is linked in from the canonical directory here rather
+# than failing on a missing file twenty minutes into a stage.
+#
+# Fails loudly if the step cannot be established. A broken link must be a
+# one-line error, not a stage that dies later on a missing file.
+stage_read_step() {
+  local tag="$1" read_dir="$2" canonical_dir="$3" constant="$4" mode="$5"
+  local step file
+  if [ "$mode" = "dynamic" ]; then
+    if ! step=$(handoff_read "$tag"); then
+      log "FATAL: no handoff record for '$tag' in $HANDOFF_DIR."
+      log "       The stage that produces it has not finished, so there is no"
+      log "       step to read. Refusing to guess one."
+      return 1
+    fi
+  else
+    step="$constant"
+  fi
+  file="model_$(printf '%06d' "$step").pt"
+  if [ ! -f "$read_dir/$file" ] && [ -f "$canonical_dir/$file" ]; then
+    log "    linking $canonical_dir/$file -> $read_dir/$file"
+    mkdir -p "$read_dir"
+    ln -f "$canonical_dir/$file" "$read_dir/$file" 2>/dev/null || true
+  fi
+  if [ ! -f "$read_dir/$file" ]; then
+    log "FATAL: $read_dir/$file does not exist (step $step)."
+    log "       The link from '$tag' is broken; refusing to start the stage."
+    return 1
+  fi
+  printf '%s\n' "$step"
+}
+
+# The step a stage's output is expected to have, for the resume logic.
+#
+#   stage_resolved_step <tag> <dir> <constant>
+#
+# The handoff record wins; the constant is the fallback for output that
+# predates the records (the original run's d28b-* lineage).
+#
+# The answer is the SAME as the one stage_read_step gives, so the resume
+# logic and the consuming stage can never disagree about which step to
+# use. That disagreement is what turned a missing file into a loop.
+stage_resolved_step() {
+  local tag="$1" dir="$2" constant="$3" step
+  if step=$(handoff_read "$tag"); then
+    printf '%s\n' "$step"
+  else
+    printf '%s\n' "$constant"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Performance.
 #
@@ -761,6 +936,7 @@ export MODEL_NAME MODEL_DIR_NAME REPO_TAG NANOCHAT_ROOT NANOCHAT_BASE_DIR \
        TAG_BASE TAG_SFT TAG_WARMUP TAG_RL_WARMUP TAG_RL_PILOT TAG_RL \
        TAG_LONGC TAG_LONGC_FINAL \
        TAG_TOUCH_A TAG_TOUCH_B TAG_TOUCH_C FINAL_TAG FINAL_STEP \
+       HANDOFF_DIR \
        BABY_ONIT_DIR GATE_DATA_DIR LOG_DIR \
        PRETRAIN_EVAL_TOKENS PRETRAIN_EVAL_EVERY \
        SFT_EVAL_TOKENS SFT_EVAL_EVERY CORE_METRIC_EVERY COMPILE_BASE \

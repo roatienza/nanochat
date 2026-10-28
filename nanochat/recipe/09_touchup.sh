@@ -43,12 +43,24 @@ STAGE_GPU="${GPU_TOUCHUP}"
 # See recipe/config.sh.
 require_single_gpu "09_touchup"
 
+# 9a reads stage 8's output at step 800. That step is FIXED: stage 8
+# runs for exactly 800 iterations, so its final step is 800 by
+# construction. It is still resolved through the same helper, so the
+# file's existence is checked before the stage starts rather than twenty
+# minutes into it.
+STEP_SFT="$(stage_read_step "$TAG_SFT" \
+  "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_SFT" \
+  "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_SFT" \
+  "$TAG_SFT_FINAL_STEP" fixed)" \
+  || die "cannot establish the step to read from stage 8"
+log "    source: sft/$TAG_SFT @ $STEP_SFT"
+
 # ---------------------------------------------------------------------------
 # 9a: tool follow-up. Teaches the model to continue after a tool result.
 # ---------------------------------------------------------------------------
 run_mod "$LOG_DIR/stage9a_toolfollowup.log" scripts.chat_sft_long \
   --run "utak-touch-toolfollowup" \
-  --source-phase sft --model-tag "$TAG_SFT" --model-step 800 \
+  --source-phase sft --model-tag "$TAG_SFT" --model-step "$STEP_SFT" \
   --output-tag "${TAG_SFT}-followup" \
   --max-seq-len 8192 --short-window 512 \
   --device-batch-size 4 --total-batch-size 262144 \
@@ -207,3 +219,9 @@ run_mod "$LOG_DIR/stage9f_harness_poison.log" scripts.chat_sft_long \
 
 log "Stage 9 complete. SERVED CHECKPOINT: chatsft_checkpoints/$FINAL_TAG @ $FINAL_STEP"
 log "Expected: v5x gate 15/15, HP gate 6/7 (HP5 is a known, cosmetic, pre-existing failure)."
+
+# The handoff record: the step the SERVED checkpoint reached, for stage
+# 10 to read. Written only after the trainer exited 0.
+record_stage_handoff "$FINAL_TAG" \
+  "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$FINAL_TAG" \
+  || die "could not record the stage 9 handoff"

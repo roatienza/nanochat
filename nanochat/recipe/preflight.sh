@@ -34,23 +34,40 @@ FAILED=0
 note() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 fail() { printf '[%s] FAIL: %s\n' "$(date '+%F %T')" "$*"; FAILED=$((FAILED+1)); }
 
+# The scratch directory is created first, because the contract check below
+# writes its log into it.
+SCRATCH="${PREFLIGHT_DIR:-/tmp/utak-preflight}"
+rm -rf "$SCRATCH"
+mkdir -p "$SCRATCH/model"
+
 # ---------------------------------------------------------------------------
 # 1. The step contract
 # ---------------------------------------------------------------------------
 note "=== 1. the step contract ==="
-if "$PY" "$NANOCHAT_ROOT/tests/test_stage_contract.py"; then
-  note "  the contract holds"
+# This used to be:
+#
+#     if "$PY" "$NANOCHAT_ROOT/tests/test_stage_contract.py"; then
+#
+# which is a NO-OP: the test file has no __main__ block, so running it
+# directly imports it, defines the test functions, and exits 0. The check
+# therefore ALWAYS passed, and the pre-flight's "the contract holds" was
+# printed no matter what the contract was. It ran on 2026-10-27 twice
+# while the contract was broken.
+#
+# pytest is what actually RUNS the test functions. It is also what the
+# pre-flight's step 3 already uses for the rest of the suite.
+if "$PY" -m pytest "$NANOCHAT_ROOT/tests/test_stage_contract.py" -q \
+     > "$SCRATCH/contract.log" 2>&1; then
+  note "  the contract holds ($(tail -1 "$SCRATCH/contract.log"))"
 else
   fail "the step contract is broken"
+  tail -25 "$SCRATCH/contract.log" | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------
 # 2. Stage 10 (pack), for real, into a scratch dir
 # ---------------------------------------------------------------------------
 note "=== 2. stage 10 (pack) ==="
-SCRATCH="${PREFLIGHT_DIR:-/tmp/utak-preflight}"
-rm -rf "$SCRATCH"
-mkdir -p "$SCRATCH/model"
 # The original run's final checkpoint. The utak run uses the same recipe,
 # so the pack path is the same.
 PACK_TAG="${PREFLIGHT_PACK_TAG:-d28b-128k-sft-v6j}"
