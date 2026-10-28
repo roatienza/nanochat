@@ -208,6 +208,11 @@ while true; do
   fi
   log "the driver is healthy; proceeding with the restart."
 
+  # Refresh the handoff records from what is on the disk, before asking
+  # where to resume. A stage that ran under the OLD code (before the
+  # records existed) has no record, and this is what gives it one.
+  bash "$NANOCHAT/recipe/record_handoffs.sh" 2>/dev/null | sed 's/^/    /' || true
+
   # ---- NO-PROGRESS GUARD ------------------------------------------------
   # Where would this restart land? If it lands on the same stage that
   # just failed, and it has done that several times, the stage is broken

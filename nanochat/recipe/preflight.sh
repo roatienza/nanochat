@@ -44,6 +44,18 @@ mkdir -p "$SCRATCH/model"
 # 1. The step contract
 # ---------------------------------------------------------------------------
 note "=== 1. the step contract ==="
+# The handoff records must match the disk. A record that names a step
+# whose checkpoint is missing, or that is stale, is worse than no record
+# at all: the consuming stage would die on the missing file twenty
+# minutes in, instead of refusing to start.
+if bash "$NANOCHAT_ROOT/recipe/record_handoffs.sh" --verify \
+     > "$SCRATCH/handoffs.log" 2>&1; then
+  note "  the handoff records match the disk ($(grep -c 'is current' "$SCRATCH/handoffs.log") record(s) checked)"
+else
+  fail "the handoff records do not match the disk"
+  tail -15 "$SCRATCH/handoffs.log" | sed 's/^/    /'
+fi
+
 # This used to be:
 #
 #     if "$PY" "$NANOCHAT_ROOT/tests/test_stage_contract.py"; then
