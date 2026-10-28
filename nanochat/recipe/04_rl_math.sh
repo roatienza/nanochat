@@ -24,7 +24,7 @@
 # chat_rl.py has no --output-tag: it reads chatsft_checkpoints/<model-tag>
 # and writes chatrl_checkpoints/<model-tag>.
 #
-# WHY --max-steps 100
+# WHY --max-steps 101
 # -------------------
 # The task set has 7,473 GSM8K train problems, so chat_rl.py computes 467
 # optimizer steps for it. The original run of this stage was stopped BY
@@ -34,9 +34,17 @@
 #
 # Without a cap the stage would run all 467 steps: about four times the
 # intended compute, and all of it past the point where the recipe says the
-# gradient is dead. --max-steps 100 stops it at the same place, and
-# because the learning rate still ramps down over the full 467-step
-# schedule, the trajectory is the same as the original run's.
+# gradient is dead. --max-steps caps it at the same place, and because the
+# learning rate still ramps down over the full 467-step schedule, the
+# trajectory is the same as the original run's.
+#
+# The number is 101, not 100, because the steps are 0-indexed: the loop
+# runs steps 0..100 inclusive, so it takes 101 iterations to REACH step
+# 100, and the checkpoint is written at step 100. The legacy run's own log
+# confirms the target: "Saved model parameters to:
+# .../chatrl_checkpoints/d28b-warmup/model_000100.pt". The budget
+# therefore reproduces the legacy chain exactly, and stage 5 reads the
+# same step the legacy run's stage 5 read.
 #
 # Usage:  ./recipe/04_rl_math.sh
 set -u
@@ -46,8 +54,9 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 log "=== Stage 4: math RL (GSM8K) -> $TAG_RL_WARMUP ==="
 STAGE_GPU="${GPU_SFT}"
 
-# The step budget: the original run's stop point.
-RL_MATH_MAX_STEPS="${RL_MATH_MAX_STEPS:-100}"
+# The step budget: the original run's stop point, in ITERATIONS (see the
+# note above on why this is 101 and not 100).
+RL_MATH_MAX_STEPS="${RL_MATH_MAX_STEPS:-101}"
 
 if [ ! -d "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$TAG_RL_WARMUP" ]; then
   log "staging chatsft/$TAG_WARMUP -> chatsft/$TAG_RL_WARMUP"

@@ -445,6 +445,42 @@ def test_the_fixed_mid_stage_steps_are_still_hardcoded():
         )
 
 
+def test_the_math_rl_budget_lands_on_the_legacy_checkpoint():
+    """Stage 4's step budget must end at the step the legacy run ended at.
+
+    The original run of stage 4 was stopped by hand and left
+    model_000100.pt behind; the recipe's next stage reads that file. The
+    budget has to reproduce that EXACTLY, and the steps are 0-indexed, so
+    the number of iterations is one more than the step.
+
+    Getting this wrong by one is invisible until stage 5 fails on a
+    missing checkpoint, hours into the run.
+    """
+    # The legacy run's own log: the file it wrote.
+    legacy = os.path.join(BASE, "chatrl_checkpoints", "d28b-warmup")
+    have = _steps(legacy)
+    if not have:
+        pytest.skip(f"{legacy} is not on this machine")
+    assert 100 in have, (
+        f"the legacy stage 4 output should hold step 100, has {sorted(have)}"
+    )
+
+    # What the recipe asks for.
+    src = _script("04_rl_math.sh")
+    m = re.search(r'RL_MATH_MAX_STEPS="\$\{RL_MATH_MAX_STEPS:-(\d+)\}"', src)
+    assert m, "04_rl_math.sh has no RL_MATH_MAX_STEPS"
+    budget = int(m.group(1))
+
+    # chat_rl.py's loop is `for step in range(run_steps)`, and the final
+    # checkpoint is written at `step == run_steps - 1`.
+    final_step = budget - 1
+    assert final_step == 100, (
+        f"stage 4's budget of {budget} iterations ends at step {final_step}, "
+        f"but the legacy chain reads step 100. The steps are 0-indexed, so "
+        f"the budget must be 101."
+    )
+
+
 def test_the_final_served_checkpoint_step():
     """Stage 9's last output is what stage 10 packs and stage 11 serves."""
     have = _steps(ORIG["touch_b"])
