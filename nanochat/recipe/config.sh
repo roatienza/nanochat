@@ -925,12 +925,30 @@ run_mod() {
     log "       Refusing to start $logfile rather than run on the CPU."
     return 70
   fi
+  # PYTHONUNBUFFERED: the stage log is the run's ONLY heartbeat. The watcher
+  # declares a stall when the newest stage log has not been written for
+  # STALL_SECONDS, and the step line is the progress readout it parses.
+  #
+  # Redirecting stdout to a file makes Python block-buffer it (4 KiB, not
+  # line-buffered), because a file is not a tty. So the trainer runs fine and
+  # its log stops growing anyway. On 2026-10-29 this killed stage 7a:
+  # stage 7a runs 1,750 steps at ~131k tokens each, and one line per 10 steps
+  # is ~2.8 KiB per 10 steps, so the buffer flushes about once every 40
+  # minutes -- past the 30-minute threshold. The watcher declared "stuck"
+  # and killed the pipeline at 04:43.
+  #
+  # That is worse than a nuisance, because stage 7a does NOT resume from its
+  # own checkpoint: it re-reads stage 6 at step 177 and starts again at step
+  # 0. A false stall therefore costs the WHOLE stage, not the steps since the
+  # last save. Unbuffered output makes the heartbeat keep the cadence the
+  # detector assumes.
   log "RUN: $*  (log: $logfile, gpu: ${STAGE_GPU:-unset}, procs: $ngpus)"
   if [ "$ngpus" -gt 1 ]; then
     ( cd "$NANOCHAT_ROOT" \
       && NANOCHAT_BASE_DIR="$NANOCHAT_BASE_DIR" \
          CUDA_VISIBLE_DEVICES="${STAGE_GPU:-0}" \
          PYTHONPATH="$NANOCHAT_ROOT:${PYTHONPATH:-}" \
+         PYTHONUNBUFFERED=1 \
          "$PY" -m torch.distributed.run --standalone \
            --nproc_per_node="$ngpus" -m "$1" -- "${@:2}" ) > "$logfile" 2>&1
   else
@@ -938,6 +956,7 @@ run_mod() {
       && NANOCHAT_BASE_DIR="$NANOCHAT_BASE_DIR" \
          CUDA_VISIBLE_DEVICES="${STAGE_GPU:-0}" \
          PYTHONPATH="$NANOCHAT_ROOT:${PYTHONPATH:-}" \
+         PYTHONUNBUFFERED=1 \
          "$PY" -m "$@" ) > "$logfile" 2>&1
   fi
   local rc=$?
