@@ -153,11 +153,25 @@ for row in "${CONTRACT[@]}"; do
   fi
 done
 
-# All nine stages done: the run is finished, and there is no stage 10 to
-# resume into.
+# All nine TRAINING stages are done. The run is NOT finished: stages 10-15
+# (pack, serve, the gates, e2e, the regression suite, the scrub test) have
+# not run yet, and they are what makes the checkpoint deployable. So the
+# answer is 10, not "nothing to do".
+#
+# This used to print the word "all stages complete" and exit 0 (commit
+# 7a568a2). Both callers do
+#
+#     resume=$(... | tail -1); case "$resume" in ''|*[!0-9]*) resume=1 ;; esac
+#
+# so a word became stage 1. If the driver died after stage 9 but before the
+# completion banner was written -- a failed gate, an error in stage 10 or
+# 13 -- the watcher would restart the pipeline at STAGE 1 and replay the
+# whole thing: ~54 GPU-hours, and it overwrites the good checkpoints on the
+# way. That is exactly the loop the handoff records exist to prevent.
+#
+# The contract is a stage NUMBER, always. The last stage is 15.
 if [ "$first" -gt 9 ]; then
-  echo "all stages complete"
-  exit 0
+  first=10
 fi
 
 echo "$first"

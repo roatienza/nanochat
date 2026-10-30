@@ -674,6 +674,14 @@ def test_resume_point_reports_a_stage_that_exists():
 
     It is called by the watcher with `tail -1`, and the answer is passed
     straight to run_all.sh --from.
+
+    The range is 1..15, not 1..9. All nine TRAINING stages complete means
+    the answer is 10 -- pack, serve, the gates and the tests still have to
+    run. It printed the word "all stages complete" instead (commit
+    7a568a2), and because both callers coerce a non-numeric answer to
+    stage 1, a finished run would have restarted from the pretrain. This
+    assertion only catches that once the run HAS finished, which is why it
+    stayed green: see test_a_complete_run_resumes_at_pack_not_at_stage_1.
     """
     out = subprocess.run(
         ["bash", os.path.join(RECIPE, "resume_point.sh")],
@@ -684,7 +692,65 @@ def test_resume_point_reports_a_stage_that_exists():
         f"resume_point.sh printed {out.stdout!r} / {out.stderr!r}; "
         f"it must print a stage number."
     )
-    assert 1 <= int(tail) <= 9, f"resume_point.sh printed {tail}"
+    assert 1 <= int(tail) <= 15, f"resume_point.sh printed {tail}"
+
+
+def test_a_complete_run_resumes_at_pack_not_at_stage_1(tmp_path):
+    """A run whose nine training stages are all done must resume at 10.
+
+    This is the regression test for commit 7a568a2. When every training
+    stage has produced its final checkpoint, resume_point.sh printed the
+    word "all stages complete". Both callers (watch_utak.sh and
+    start_pipeline.sh) do
+
+        case "$resume" in ''|*[!0-9]*) resume=1 ;; esac
+
+    so the word became 1, and a run that died in stage 10, or on a failed
+    gate, restarted from the pretrain -- ~54 GPU-hours, overwriting the
+    good checkpoints as it went.
+
+    Built on a synthetic tree so it is independent of how far the live run
+    has got: on 2026-10-30 the real answer is 8, and a test that reads the
+    live tree cannot see this at all until the run completes.
+    """
+    base = tmp_path / "v2"
+    handoff = base / "_handoff"
+    handoff.mkdir(parents=True)
+
+    # The nine (tag, directory, final step) rows of the contract, exactly.
+    rows = [
+        ("utak-base", "base_checkpoints/utak-base", 277760),
+        ("utak-sft-tools", "chatsft_checkpoints/utak-sft-tools", 13650),
+        ("utak-warmup", "chatsft_checkpoints/utak-warmup", 507),
+        ("utak-rl-warmup", "chatrl_checkpoints/utak-rl-warmup", 100),
+        ("utak-rl-pilot", "chatrl_checkpoints/utak-rl-pilot", 177),
+        ("utak-rl", "chatrl_checkpoints/utak-rl", 177),
+        ("utak-128k-final", "base_checkpoints/utak-128k-final", 250),
+        ("utak-sft", "chatsft_checkpoints/utak-sft", 800),
+        ("utak-sft-c", "chatsft_checkpoints/utak-sft-c", 240),
+    ]
+    for tag, rel, step in rows:
+        d = base / rel
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"model_{step:06d}.pt").touch()
+        (d / f"meta_{step:06d}.json").touch()
+        (handoff / f"{tag}.step").write_text(f"{step}\n")
+
+    env = dict(os.environ, NANOCHAT_BASE_DIR=str(base))
+    out = subprocess.run(
+        ["bash", os.path.join(RECIPE, "resume_point.sh")],
+        capture_output=True, text=True, env=env,
+    )
+    tail = out.stdout.strip().splitlines()[-1] if out.stdout.strip() else ""
+    assert tail.isdigit(), (
+        f"a fully-trained run must resume at a stage NUMBER, not {tail!r}.\n"
+        f"Both callers coerce a non-numeric answer to stage 1, which would "
+        f"replay the entire pipeline.\nstdout:\n{out.stdout}\nstderr:\n{out.stderr}"
+    )
+    assert int(tail) == 10, (
+        f"a fully-trained run must resume at stage 10 (pack), got {tail}.\n"
+        f"stdout:\n{out.stdout}"
+    )
 
 
 def test_the_stages_stage_the_read_tree_before_resolving_the_step():
