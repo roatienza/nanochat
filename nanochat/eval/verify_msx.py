@@ -103,14 +103,48 @@ def chat(url, messages, tools=None, max_tokens=200, temperature=0.6, seed=0):
 
 
 def parse_args(raw):
-    try:
-        return json.loads(raw) if raw.strip() else {}
-    except json.JSONDecodeError:
+    """Parse tool-call arguments, tolerating the streaming parser's artifacts.
+
+    The nanochat streaming tool parser can leave a trailing <|python_end|> on
+    the arguments string; strict json.loads then returns {} and the episode
+    derails with empty args (measured 2026-11-02). Strip everything after the
+    final closing brace before parsing.
+    """
+    raw = (raw or "").strip()
+    if not raw:
         return {}
+    # drop a trailing <|python_end|> (or <|python_start|>) marker
+    for marker in ("<|python_end|>", "<|python_start|>"):
+        if marker in raw:
+            raw = raw.split(marker)[0].strip() or raw.replace(marker, "").strip()
+    # keep only up to the last balanced closing brace
+    if raw.startswith("{"):
+        last = raw.rfind("}")
+        if last != -1:
+            raw = raw[:last + 1]
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # single quotes / trailing commas
+        try:
+            import re as _re
+            fixed = _re.sub(r",\s*([}\]])", r"\1", raw.replace("'", '"'))
+            return json.loads(fixed)
+        except Exception:
+            return {}
 
 
 def tool_loop(url, question, sandbox, max_steps=6, seed=0, temperature=0.6):
-    """Run the deployed loop: call -> result -> call ... -> prose answer."""
+    """Run the deployed loop: call -> result -> call ... -> prose answer.
+
+    Tool results are replayed in the OpenAI tool-role shape (assistant with
+    tool_calls, then role=tool with tool_call_id) -- the same shape the real
+    harness uses and the shape tasks/multistep.py renders in training rows.
+    The earlier user-role 'Tool result: ...' replay was out-of-distribution
+    and broke otherwise-correct episodes (measured 2026-11-02: the same
+    grep_then_read episode finishes correctly with tool-role replay and
+    derails with user-role replay).
+    """
     messages = [{"role": "system", "content": SYSMSG},
                 {"role": "user", "content": question}]
     trace = []
@@ -124,8 +158,12 @@ def tool_loop(url, question, sandbox, max_steps=6, seed=0, temperature=0.6):
         args = parse_args(raw)
         result = sandbox.call(name, args)
         trace.append((name, args))
-        messages.append({"role": "assistant", "content": content or f"CALL {name} {raw}"})
-        messages.append({"role": "user", "content": f"Tool result: {result}"})
+        call_id = f"call_{len(trace)}_{name}"
+        messages.append({"role": "assistant", "content": content or None,
+                         "tool_calls": [{"id": call_id, "type": "function",
+                                         "function": {"name": name, "arguments": raw}}]})
+        messages.append({"role": "tool", "tool_call_id": call_id,
+                         "name": name, "content": str(result)})
     return "", trace
 
 
