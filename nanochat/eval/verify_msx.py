@@ -186,7 +186,12 @@ def ms_check(family, index, n_seeds=3, temp=0.6):
         fam, question, files, answer, min_calls = ds.gold(index)
         sb = Sandbox(files)
         got, trace = tool_loop(URL, question, sb, seed=s, temperature=temp)
-        if family == "edit_then_verify":
+        if family in ("grep_then_read", "list_then_read", "search_then_read"):
+            # name/token answers: grade by exact match (case-insensitive),
+            # tolerating surrounding prose
+            good = (got or "").strip().lower() == str(answer).strip().lower() or (
+                len(str(answer)) > 4 and str(answer).strip().lower() in (got or "").lower())
+        elif family == "edit_then_verify":
             good = answer.lower() in (got or "").lower()
         else:
             good = num(got) is not None and num(got) == num(answer)
