@@ -359,16 +359,38 @@ def sft_data_generator(split, buffer_size=32):
     def refill():
         nonlocal cursor, epoch
         while len(conv_buffer) < buffer_size:
-            conversation = dataset[cursor % dataset_size]
+            mix_index = cursor % dataset_size
+            conversation = dataset[mix_index]
             ids, mask = tokenizer.render_conversation(conversation, max_tokens=args.max_seq_len)
             cursor += ddp_world_size
             if cursor >= dataset_size:
                 cursor = cursor % dataset_size
                 epoch += 1
-            # skip degenerate rows: no supervised tokens (assistant turn cut by
-            # truncation) or empty render
+            # INVARIANT: every scheduled row must contribute at least one
+            # supervised token. A zero-sum mask means the assistant turn was
+            # cut by truncation (or the row rendered empty) and the row is
+            # silently contributing nothing -- this is how 24k doc->CALL rows
+            # vanished at max_seq_len 8192 (v5l..v5q root cause). Never skip:
+            # raise, naming the source task so the mixture can be fixed.
             if sum(mask) == 0 or len(ids) < 8:
-                continue
+                task_name = "unknown"
+                try:
+                    task_idx, _local = dataset.index_map[mix_index]
+                    task_name = type(dataset.tasks[task_idx]).__name__
+                except (AttributeError, IndexError, TypeError):
+                    pass
+                snippet = ""
+                try:
+                    msg = conversation["messages"][0]
+                    snippet = str(msg.get("content", ""))[:160]
+                except (KeyError, IndexError, TypeError):
+                    pass
+                raise AssertionError(
+                    f"refill(): row rendered with 0 supervised tokens "
+                    f"(len(ids)={len(ids)}, source={task_name}, "
+                    f"max_seq_len={args.max_seq_len}, first_msg={snippet!r}). "
+                    f"Fix the generator or raise max_seq_len; do not skip."
+                )
             conv_buffer.append((ids, mask))
 
     while True:
