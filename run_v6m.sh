@@ -13,10 +13,10 @@
 #     zero supervised tokens CRASHES the run loudly instead of being skipped
 #
 # Same hyperparameters as v5r (60 it, tbs 262144, msl 32768, dbs 1).
-# GPU: set CUDA_VISIBLE_DEVICES before invoking (default 0).
+# GPU: set CUDA_VISIBLE_DEVICES before invoking (default 3 — least-loaded at launch).
 set -u
 cd /data/rowel/nanochat
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+CUDA_VISIBLE_DEVICES="$(if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then echo 3; else echo "$CUDA_VISIBLE_DEVICES"; fi)"
 exec .venv/bin/python -m scripts.chat_sft_long \
   --run stage7b-v6m-msx \
   --source-phase sft --model-tag d28b-128k-sft-v6j --model-step 240 \
