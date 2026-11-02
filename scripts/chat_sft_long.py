@@ -26,11 +26,12 @@ import torch.utils.checkpoint as cp
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, COMPUTE_DTYPE
+from nanochat.common import COMPUTE_DTYPE, DummyWandb, autodetect_device_type, compute_cleanup, compute_init, get_base_dir, print0
 from nanochat.gpt import GPT, GPTConfig, norm
 from nanochat.checkpoint_manager import load_checkpoint, save_checkpoint
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.loss_eval import evaluate_bpb
+from nanochat.dataloader import PrefetchLoader
 from tasks.longctx_sft import LongContextSFT
 from tasks.toolcalling import ToolCalling
 from tasks.toolace import ToolACE
@@ -77,6 +78,15 @@ parser.add_argument("--harness-basics-epochs", type=int, default=0,
 parser.add_argument("--harness-poison-epochs", type=int, default=0,
                     help="copies of HarnessPoison (broken-answer history -> act on current turn; needs the no_train tokenizer flag) in the mixture")
 parser.add_argument("--smoltalk-epochs", type=int, default=1)
+parser.add_argument("--multistep-epochs", type=int, default=0,
+                    help="copies of MultiStep (verifiable multi-step tool episodes on the "
+                         "DEPLOYED tool surface) in the mixture")
+parser.add_argument("--multistep-rows", type=int, default=3000,
+                    help="rows per MultiStep copy")
+parser.add_argument("--multistep-seed", type=int, default=2027)
+parser.add_argument("--multistep-families", type=str,
+                    default="grep_then_read,list_then_read,edit_then_verify,sum_three,search_then_read",
+                    help="comma-separated MultiStep families")
 parser.add_argument("--embedding-lr", type=float, default=0.072, help="0.24x of pretrain (SFT-ish)")
 parser.add_argument("--unembedding-lr", type=float, default=0.0019)
 parser.add_argument("--matrix-lr", type=float, default=0.0048)
@@ -89,6 +99,21 @@ parser.add_argument("--eval-every", type=int, default=50)
 parser.add_argument("--eval-tokens", type=int, default=2*131072)
 parser.add_argument("--save-every", type=int, default=100)
 parser.add_argument("--ce-chunk", type=int, default=4096)
+# A step BUDGET, as opposed to --num-iterations, which is a schedule.
+#
+# --num-iterations sets both how many steps run AND the learning-rate
+# schedule: the multiplier is progress = step / num_iterations. So
+# lowering --num-iterations to stop early ALSO decays the learning rate
+# to zero over the shorter run, and the trajectory is a different one.
+#
+# --max-steps caps only the COMPUTE: the loop stops after that many
+# steps, but the learning rate still follows the full --num-iterations
+# schedule. That is the difference that matters when the goal is to
+# reproduce a run that was stopped by hand part way through.
+parser.add_argument("--max-steps", type=int, default=-1,
+    help="stop after this many steps (-1 = run the whole schedule). "
+         "Caps the compute without changing the learning-rate schedule, "
+         "which still follows --num-iterations.")
 args = parser.parse_args()
 
 device_type = autodetect_device_type()
@@ -133,6 +158,18 @@ token_bytes = get_token_bytes(device=device)
 x0_holder = [None]
 CE_CHUNK = args.ce_chunk
 
+# -----------------------------------------------------------------------------
+# torch.compile
+# -----------------------------------------------------------------------------
+# The long-context SFT trainer was one of the stages that never compiled.
+# Its shapes are FIXED (device_batch_size x max_seq_len, every step), so
+# dynamic=False is safe and there is no recompilation thrash.
+#
+# We compile the PER-BLOCK inner function rather than the whole model: the
+# outer function uses torch.utils.checkpoint, and compiling a function that
+# contains a checkpoint region either fails to trace or loses the
+# recomputation. Compiling the block body keeps the checkpointing intact
+# while still fusing the attention and MLP matmuls.
 def _group_forward(model, idx, cos_sin, x_in, lo, hi):
     x = x_in
     for i in range(lo, hi):
@@ -152,6 +189,17 @@ def _group_forward(model, idx, cos_sin, x_in, lo, hi):
             out[:, s:e] = blk.mlp.c_proj(h)
         x = x + out
     return x
+
+# The compile has to happen AFTER _group_forward is defined: assigning
+# torch.compile(_group_forward) before the def raises NameError at import
+# time. This block used to sit ABOVE the def, so every run of this script
+# died with "name '_group_forward' is not defined" -- the stage-7b/8/9
+# runs that produced the shipped checkpoints predate the compile change.
+_COMPILE = os.environ.get("NANOCHAT_COMPILE", "1") != "0"
+if _COMPILE:
+    _group_forward = torch.compile(_group_forward, dynamic=False)
+    print0("torch.compile: enabled (per-block)")
+
 
 def longctx_forward_loss(model, idx, targets, loss_reduction="mean"):
     B, T = idx.size()
@@ -272,7 +320,13 @@ if args.harness_poison_epochs > 0:
     from tasks.harness_poison import HarnessPoison
     for _ in range(args.harness_poison_epochs):
         train_tasks.append(HarnessPoison(n_rows=6000, seed=1111))
-for _ in range(args.smoltalk_epochs):
+if args.multistep_epochs > 0:
+    from tasks.multistep import MultiStep
+    _ms_fams = tuple(f.strip() for f in args.multistep_families.split(",") if f.strip())
+    for _ in range(args.multistep_epochs):
+        train_tasks.append(MultiStep(families=_ms_fams, n_rows=args.multistep_rows,
+                                     seed=args.multistep_seed))
+if args.smoltalk_epochs > 0:
     st = SmolTalk(split="train", stop=args.smoltalk_cap or None)  # Task(start,stop) view
     train_tasks.append(st)
 train_dataset = TaskMixture(train_tasks)
@@ -282,6 +336,7 @@ print0(f"Training mixture: {len(train_dataset):,} rows (LongCtx x{args.longctx_e
        f"ToolStop x{args.toolstop_epochs}, HarnessReplay x{args.harness_epochs}, "
        f"HarnessBasics x{args.harness_basics_epochs}, "
        f"HarnessPoison x{args.harness_poison_epochs}, "
+       f"MultiStep x{args.multistep_epochs}, "
        f"SmolTalk x{args.smoltalk_epochs})")
 val_dataset = TaskMixture([
     LongContextSFT(levels=(1,), instances_per_level=4, seed=999),
@@ -381,8 +436,12 @@ def batches(split):
                 targets[i, L - 1:] = -1
         yield inputs, targets
 
-train_batches = batches("train")
-val_batches = lambda: batches("val")
+train_batches = PrefetchLoader(batches("train"))
+# NOTE: batches() is a generator function, so `lambda: batches("val")`
+# built a NEW generator on every call and `next(val_batches())` handed
+# back the same first batch on all eval_steps iterations -- the eval was
+# a single batch measured 16 times, not an average over 16 batches.
+# The eval loop hoists one loader instead. Do not reintroduce a lambda.
 
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size
@@ -444,8 +503,23 @@ if args.resume_step > 0:
 
 x, y = next(train_batches)
 
-for step in range(start_step, num_iterations + 1):
-    last_step = step == num_iterations
+# The step budget. The loop runs 0..num_iterations inclusive, so the
+# schedule is num_iterations steps long and the final step is
+# num_iterations. A budget of N stops the loop at step N, with the
+# learning rate still following the full num_iterations schedule.
+#
+# The loop's LAST step must be the budgeted one, so that the final
+# checkpoint is written and the stage's handoff record names it. That is
+# why the comparison is against run_steps and not against
+# num_iterations: a run stopped by hand writes a checkpoint at the step
+# it was stopped at, and the next stage reads THAT.
+run_steps = num_iterations if args.max_steps < 0 else min(args.max_steps, num_iterations)
+if run_steps != num_iterations:
+    print0(f"Step budget: stopping at step {run_steps} of {num_iterations} "
+           f"(the learning rate still follows the full {num_iterations}-step schedule)")
+
+for step in range(start_step, run_steps + 1):
+    last_step = step == run_steps
     progress = step / max(1, num_iterations)
 
     if args.eval_every > 0 and (last_step or step % args.eval_every == 0):
@@ -456,9 +530,10 @@ for step in range(start_step, num_iterations + 1):
         # forward instead, accumulating sum-loss and bytes manually.
         total_nats = torch.tensor(0.0, dtype=torch.float32, device=device)
         total_bytes = torch.tensor(0, dtype=torch.int64, device=device)
+        val_loader = batches("val")  # one loader per pass; see note at val_batches
         with torch.no_grad():
             for _ in range(eval_steps):
-                vx, vy = next(val_batches())
+                vx, vy = next(val_loader)
                 valid = vy >= 0
                 vy_safe = torch.where(valid, vy, torch.zeros_like(vy))
                 nb = token_bytes[vy_safe]
@@ -500,7 +575,13 @@ for step in range(start_step, num_iterations + 1):
         loss = longctx_forward_loss(model, x, y)
         train_loss = loss.detach()
         (loss / grad_accum_steps).backward()
-        x, y = next(train_batches)
+        if micro < grad_accum_steps - 1:
+            # Need the next micro-batch now; with the prefetching loader it
+            # is already built, so this returns immediately.
+            x, y = next(train_batches)
+    # Fetch the next batch for the NEXT step. The prefetching loader has
+    # already built it in the background, so this does not stall.
+    x, y = next(train_batches)
     lrm = get_lr_multiplier(progress)
     for group in optimizer.param_groups:
         group["lr"] = group["initial_lr"] * lrm
@@ -514,8 +595,8 @@ for step in range(start_step, num_iterations + 1):
     total_training_time += dt if step > 2 else 0
     tok_per_sec = int(args.total_batch_size / dt)
     if step % 5 == 0:
-        eta_min = (num_iterations - step) * dt / 60
-        print0(f"Step {step:05d}/{num_iterations} | loss {smooth_train_loss:.4f} | {tok_per_sec:,} tok/s | {dt:.1f}s/step | ETA {eta_min:.0f} min | mem {torch.cuda.max_memory_allocated()/1e9:.1f} GB")
+        eta_min = (run_steps - step) * dt / 60
+        print0(f"Step {step:05d}/{run_steps} | loss {smooth_train_loss:.4f} | {tok_per_sec:,} tok/s | {dt:.1f}s/step | ETA {eta_min:.0f} min | mem {torch.cuda.max_memory_allocated()/1e9:.1f} GB")
     wandb_run.log({"step": step, "train/loss": smooth_train_loss, "tok/s": tok_per_sec})
 
 compute_cleanup()

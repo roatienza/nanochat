@@ -116,36 +116,81 @@ def _gen_niah(rng, level, i):
     return prompt, a
 
 
-_FACT_TOPICS = [
-    ("water regulation", "Reservoir Ordinance 47-B caps withdrawals at 12,000 acre-feet per season."),
-    ("rail scheduling", "Freight line 9 runs on Tuesdays and Fridays only, departing at 06:40."),
-    ("archive access", "Reading room passes are issued at the north desk and expire after 14 days."),
-    ("sensor calibration", "Barometric units are recalibrated every 240 hours of operation."),
-    ("vendor payments", "Invoices under code 77 are settled net-45; all others net-30."),
-    ("greenhouse zones", "Zone 4 holds humidity at 62 percent and lights run 16 hours daily."),
-    ("ferry tickets", "Deck passage for vehicles taller than 2.1 meters costs double."),
-    ("library fines", "Overdue maps accrue 20 cents per day up to a 15 dollar cap."),
-    ("compost schedule", "Green bins are collected on the first and third Wednesday."),
-    ("antenna permits", "Rooftop arrays above 3 meters need a countersigned form 12-K."),
-]
+# ---------------------------------------------------------------------------
+# Generated fact material
+# ---------------------------------------------------------------------------
+# The original _FACT_TOPICS pool held 10 (topic, fact) pairs and the question
+# named the topic, so the target was a 10-entry lookup the model could memorize
+# without reading the document. Measured on the old code: 300/300 doc_qa rows
+# were answerable from the question text alone, and 200 sampled rows produced
+# 10 distinct targets. Facts are now GENERATED per instance, so every target is
+# a function of document content and the mapping cannot be memorized.
+
+_TOPIC_STEMS = (
+    "water regulation", "rail scheduling", "archive access", "sensor calibration",
+    "vendor payments", "greenhouse zones", "ferry tickets", "library fines",
+    "compost schedule", "antenna permits", "fleet servicing", "cold storage",
+    "irrigation quotas", "noise abatement", "harbour dredging", "turbine output",
+    "seed stock", "customs bonding", "radio licensing", "waste transfer",
+)
+
+_QUALIFIERS = ("north", "south", "east", "west", "central", "coastal", "upland",
+               "harbour", "inland", "border")
+
+_UNITS = ("acre-feet", "kilowatt-hours", "litres", "tonnes", "hours", "meters",
+          "days", "credits", "permits", "crates")
 
 
-def _gen_doc_qa(rng, level, i):
-    """A sectioned report; the question targets one fact stated once.
-    Level 2/3 make the document longer and the fact deeper."""
-    target_tokens = {0: 4000, 1: 24000, 2: 64000, 3: 100000}[level]
-    n_words = int(target_tokens / 1.3)
-    n_sections = {0: 4, 1: 12, 2: 24, 3: 36}[level]
-    topic_idx = rng.randrange(len(_FACT_TOPICS))
-    section_no = rng.randrange(2, n_sections - 1)
-    topic, fact = _FACT_TOPICS[topic_idx]
+def _clause(rng):
+    """A clause code, e.g. 'QP-47C'. Fresh per instance."""
+    return (rng.choice(string.ascii_uppercase) + rng.choice(string.ascii_uppercase) +
+            f"-{rng.randint(10, 99)}" + rng.choice(string.ascii_uppercase))
+
+
+def _gen_topic(rng):
+    return f"{rng.choice(_QUALIFIERS)} {rng.choice(_TOPIC_STEMS)}"
+
+
+def _gen_fact(rng, topic):
+    """A fact that is a function of generated numbers, never a fixed string."""
+    n = rng.randint(11, 9999)
+    m = rng.randint(2, 24)
+    unit = rng.choice(_UNITS)
+    code = _clause(rng)
+    return rng.choice([
+        f"{topic.capitalize()} is capped at {n:,} {unit} per season under clause {code}.",
+        f"Under clause {code}, {topic} must be reviewed every {m} {unit} and logged in register {n}.",
+        f"{topic.capitalize()} requires a countersigned form {code} whenever it exceeds {n:,} {unit}.",
+        f"Clause {code} sets the {topic} threshold at {n:,} {unit}, reviewed every {m} {unit}.",
+        f"Where {topic} applies, record {n:,} {unit} against clause {code} before release.",
+    ])
+
+
+def _sections(rng, n_words, n_sections):
+    """Split filler into numbered sections, returning (body_list, per_sec_words).
+
+    body_list holds the section paragraphs; callers insert their own marked
+    sentences after the paragraph they want to target.
+    """
     words = _filler(rng, n_words)
-    per_sec = len(words) // n_sections
+    per_sec = max(1, len(words) // n_sections)
     body = []
     for s in range(n_sections):
         body.append(f"Section {s + 1}. " + " ".join(words[s * per_sec:(s + 1) * per_sec]))
-        if s == section_no:
-            body.append(f"Section {s + 1} (continued). Note on {topic}: {fact}")
+    return body, words
+
+
+def _gen_doc_qa(rng, level, i):
+    """A sectioned report; the question targets one GENERATED fact stated once.
+    Level 2/3 make the document longer and the fact deeper."""
+    target_tokens = {0: 4000, 1: 24000, 2: 64000, 3: 100000}
+    n_words = int(target_tokens[level] / 1.3)
+    n_sections = {0: 4, 1: 12, 2: 24, 3: 36}[level]
+    topic = _gen_topic(rng)
+    fact = _gen_fact(rng, topic)
+    section_no = rng.randrange(2, n_sections - 1)
+    body, _ = _sections(rng, n_words, n_sections)
+    body.insert(section_no + 1, f"Section {section_no + 1} (continued). Note on {topic}: {fact}")
     text = "\n\n".join(body)
     # distinct prefix (doc_qa family): "archival record" phrasing
     prompt = ("The following is an archival record with numbered sections. Read it carefully.\n\n" + text +
@@ -153,6 +198,118 @@ def _gen_doc_qa(rng, level, i):
               "Answer in one sentence, quoting the exact rule.")
     return prompt, fact
 
+
+def _gen_doc_arith(rng, level, i):
+    """The answer is a SUM of line items buried in one section. No single span
+    of the document contains the target, so retrieval alone cannot answer it."""
+    target_tokens = {0: 4000, 1: 24000, 2: 64000, 3: 100000}
+    n_words = int(target_tokens[level] / 1.3)
+    n_sections = {0: 4, 1: 12, 2: 24, 3: 36}[level]
+    unit = rng.choice(_UNITS)
+    n_items = {0: 3, 1: 4, 2: 5, 3: 6}[level]
+    items = [rng.randint(11, 999) for _ in range(n_items)]
+    total = sum(items)
+    section_no = rng.randrange(2, n_sections - 1)
+    body, _ = _sections(rng, n_words, n_sections)
+    listing = "; ".join(f"{v:,} {unit}" for v in items)
+    body.insert(section_no + 1,
+                f"Section {section_no + 1} (continued). Line items: {listing}.")
+    text = "\n\n".join(body)
+    prompt = ("The following is a procurement record with numbered sections. Read it carefully.\n\n" + text +
+              f"\n\nQuestion: What is the total of the line items listed in section "
+              f"{section_no + 1}, in {unit}? Answer with only the number, no separators.")
+    return prompt, str(total)
+
+
+def _gen_doc_join(rng, level, i):
+    """Two facts in DIFFERENT sections must be combined to answer."""
+    target_tokens = {0: 4000, 1: 24000, 2: 64000, 3: 100000}
+    n_words = int(target_tokens[level] / 1.3)
+    n_sections = {0: 4, 1: 12, 2: 24, 3: 36}[level]
+    entity = rng.choice(["copper", "cobalt", "cedar", "granite", "saffron", "graphite",
+                         "juniper", "basalt", "amber", "opal"])
+    depart = rng.randint(1, 25)
+    transit = rng.randint(2, 21)
+    arrive = depart + transit
+    a_no = rng.randrange(1, n_sections // 2)
+    b_no = rng.randrange(n_sections // 2, n_sections - 1)
+    body, _ = _sections(rng, n_words, n_sections)
+    # insert at the HIGHER index first so the lower insertion does not shift it
+    body.insert(b_no + 1, f"Section {b_no + 1} (continued). Transit for {entity} cargo "
+                          f"takes {transit} days from the loading date.")
+    body.insert(a_no + 1, f"Section {a_no + 1} (continued). The {entity} cargo loads on "
+                          f"day {depart} of the month.")
+    text = "\n\n".join(body)
+    prompt = ("The following is a shipping dossier with numbered sections. Read it carefully.\n\n" + text +
+              f"\n\nQuestion: On which day of the month does the {entity} cargo arrive? "
+              "Combine the loading day with the transit time. Answer with only the number.")
+    return prompt, str(arrive)
+
+
+def _gen_doc_contradict(rng, level, i):
+    """The same attribute appears twice with different values; the instruction
+    says the higher revision governs. The model must prefer the stated rule
+    over the first value it meets."""
+    target_tokens = {0: 4000, 1: 24000, 2: 64000, 3: 100000}
+    n_words = int(target_tokens[level] / 1.3)
+    n_sections = {0: 4, 1: 12, 2: 24, 3: 36}[level]
+    topic = _gen_topic(rng)
+    unit = rng.choice(_UNITS)
+    old_val = rng.randint(11, 999)
+    new_val = rng.randint(11, 999)
+    while new_val == old_val:
+        new_val = rng.randint(11, 999)
+    old_rev, new_rev = rng.randint(2, 5), rng.randint(6, 9)
+    a_no = rng.randrange(1, n_sections // 2)
+    b_no = rng.randrange(n_sections // 2, n_sections - 1)
+    body, _ = _sections(rng, n_words, n_sections)
+    # Which revision sits in which section is RANDOM. Pinning the higher
+    # revision to the later section would let the model answer with a
+    # positional shortcut ("last value wins") and never read the revision
+    # number, which is the whole skill this family is meant to teach.
+    hi_no, lo_no = (a_no, b_no) if rng.random() < 0.5 else (b_no, a_no)
+    for sec_no, rev, val in ((hi_no, new_rev, new_val), (lo_no, old_rev, old_val)):
+        body.insert(sec_no + 1, f"Section {sec_no + 1} (revision {rev}). {topic.capitalize()} "
+                                f"is set to {val:,} {unit}.")
+    text = "\n\n".join(body)
+    prompt = ("The following is a controlled record with numbered sections. Read it carefully.\n\n" + text +
+              f"\n\nQuestion: Two sections give a value for {topic}. Where sections disagree, "
+              "the higher revision number governs. What is the current value? "
+              f"Answer with only the number and unit, e.g. 42 {unit}.")
+    return prompt, f"{new_val:,} {unit}"
+
+
+def _gen_doc_track(rng, level, i):
+    """A quantity mutates across several sections; ask for the FINAL state.
+    Every intermediate value appears in the text, so returning the first or
+    the largest value is wrong — the model must apply all deltas in order."""
+    target_tokens = {0: 4000, 1: 24000, 2: 64000, 3: 100000}
+    n_words = int(target_tokens[level] / 1.3)
+    n_sections = {0: 4, 1: 12, 2: 24, 3: 36}[level]
+    item = rng.choice(["stock", "reserve", "balance", "inventory", "allocation"])
+    start = rng.randint(200, 900)
+    n_events = {0: 2, 1: 3, 2: 4, 3: 5}[level]
+    slots = sorted(rng.sample(range(1, n_sections - 1), n_events))
+    state = start
+    events = []
+    for s in slots:
+        delta = rng.randint(11, 120)
+        sign = rng.choice([+1, -1])
+        if sign < 0 and state - delta < 0:
+            sign = +1
+        state += sign * delta
+        events.append((s, sign, delta))
+    body, _ = _sections(rng, n_words, n_sections)
+    for s, sign, delta in sorted(events, reverse=True):
+        verb = "increased by" if sign > 0 else "decreased by"
+        body.insert(s + 1, f"Section {s + 1} (continued). The {item} {verb} {delta} units.")
+    body.insert(1, f"Section 1 (continued). The {item} opens at {start} units.")
+    text = "\n\n".join(body)
+    prompt = ("The following is a running ledger with numbered sections, in order. "
+              "Read it carefully.\n\n" + text +
+              f"\n\nQuestion: Apply every change in section order. What is the final {item}, "
+              "in units? Answer with only the number.")
+    return prompt, str(state)
 
 _TOOLS = [
     {"type": "function", "function": {"name": "get_weather", "parameters": {
@@ -221,33 +378,66 @@ def _gen_multi_tool_weather(rng, level, i):
 
 def _gen_long_summary(rng, level, i):
     """Teaches long GENERATION: summarize a long report; target is a real
-    multi-sentence summary so the model does not EOS after a few tokens."""
-    target_tokens = {0: 4000, 1: 24000, 2: 64000, 3: 100000}[level]
-    n_words = int(target_tokens / 1.3)
+    multi-sentence summary so the model does not EOS after a few tokens.
+
+    Two defects fixed here, both measured on the previous version:
+      (1) the prompt hardcoded a 4-name theme list while the target named
+          themes from an 8-name pool -> 285/300 rows named a theme the prompt
+          never offered, i.e. the family taught the model to ignore an
+          explicit constraint in the instruction.
+      (2) every bullet ended with the same sentence ("outline current practice
+          and note where oversight applies"), so the target was reproducible
+          from format alone without reading the document.
+    Themes are now drawn from the document that was actually built, and each
+    bullet must carry that section's recorded figures.
+    """
+    target_tokens = {0: 4000, 1: 24000, 2: 64000, 3: 100000}
+    n_words = int(target_tokens[level] / 1.3)
     words = _filler(rng, n_words)
     n_sections = {0: 4, 1: 8, 2: 16, 3: 24}[level]
-    per_sec = len(words) // n_sections
-    themes = rng.sample(["logistics", "maintenance", "budget", "staffing",
-                         "safety", "training", "inventory", "compliance"], 4)
+    per_sec = max(1, len(words) // n_sections)
+    # themes actually present in THIS document, in document order
+    pool = ("logistics", "maintenance", "budget", "staffing", "safety",
+            "training", "inventory", "compliance", "procurement", "outreach",
+            "insurance", "utilities")
+    k = min(len(pool), max(3, n_sections // 2))
+    themes = rng.sample(pool, k)
+    sec_theme, sec_figs = [], []
+    for s in range(n_sections):
+        t = themes[s % k]
+        entries = rng.randint(11, 999)
+        flagged = rng.randint(1, max(1, entries // 4))
+        sec_theme.append(t)
+        sec_figs.append((entries, flagged))
     body = []
     for s in range(n_sections):
-        theme = themes[s % 4]
-        body.append(f"Section {s + 1} ({theme}). " + " ".join(words[s * per_sec:(s + 1) * per_sec]))
+        entries, flagged = sec_figs[s]
+        body.append(f"Section {s + 1} ({sec_theme[s]}). " + " ".join(words[s * per_sec:(s + 1) * per_sec]) +
+                    f" The register records {entries} entries, of which {flagged} were flagged.")
     text = "\n\n".join(body)
     # distinct prefix (long_summary family): imperative task framing, no
     # "report ... read carefully" phrasing shared with the other families
+    first_seen = []
+    for t in sec_theme:
+        if t not in [x for x, _ in first_seen]:
+            first_seen.append((t, sec_figs[sec_theme.index(t)]))
+    picks = first_seen[:3]
+    offered = ", ".join(t for t, _ in picks)
     prompt = ("Summarize the following document in 3 bullet points.\n\n" + text +
-              "\n\nEach bullet must be one full sentence and mention its theme by name "
-              "(logistics, maintenance, budget, staffing - pick the three that appear).")
-    picks = themes[:3]
-    a = ("\n".join(f"- The report discusses {t}: the relevant sections outline "
-                   f"current practice and note where oversight applies." for t in picks))
+              f"\n\nEach bullet must name one of these themes and state that theme's figures "
+              f"({offered}). Do not invent a theme that is not listed.")
+    a = "\n".join(f"- {t}: {entries} entries recorded, {flagged} flagged."
+                  for t, (entries, flagged) in picks)
     return prompt, a
 
 
 GENERATORS = {
     "niah": _gen_niah,
     "doc_qa": _gen_doc_qa,
+    "doc_arith": _gen_doc_arith,
+    "doc_join": _gen_doc_join,
+    "doc_contradict": _gen_doc_contradict,
+    "doc_track": _gen_doc_track,
     "multi_tool": _gen_multi_tool,
     "multi_tool_weather": _gen_multi_tool_weather,
     "long_summary": _gen_long_summary,
