@@ -160,16 +160,127 @@ def get_dist_info():
     else:
         return False, 0, 0, 1
 
+def cuda_health() -> tuple:
+    """Probe the CUDA runtime and say WHY it is unusable, if it is.
+
+    WHY THIS EXISTS
+    ---------------
+    On 2026-10-24 23:27 the node's NVIDIA driver fell over: all 8 A100s
+    reported "Unable to determine the device handle ... Unknown Error" and
+    cuInit() returned 999 (CUDA_ERROR_UNKNOWN). `torch.cuda.is_available()`
+    returns False in that state -- it is a perfectly normal boolean, it
+    just says False.
+
+    The old autodetect_device_type() treated that False as "this machine
+    has no GPU, use the CPU". A 2B-parameter pretrain then spent 15.6 hours
+    grinding through 72,760 remaining steps on 128 CPU cores at a speed
+    that would have taken ~6 months, printing nothing, while the
+    supervisor watched a live pid and saw nothing wrong. The training
+    budget was 73.8% complete and the run was silently dead.
+
+    So the rule is now: a TRAINING run must have a working CUDA runtime,
+    and if it does not, it must say so and die. The CPU path still exists
+    for tests and for the tiny harness scripts, which is what it is for.
+
+    Returns (ok: bool, detail: str).
+    """
+    if torch.cuda.is_available():
+        try:
+            n = torch.cuda.device_count()
+            name = torch.cuda.get_device_name(0)
+            return True, f"{n} device(s), first is {name}"
+        except Exception as e:  # pragma: no cover - depends on driver state
+            return False, f"torch.cuda.is_available() was True but the driver failed: {e}"
+
+    # torch.cuda.is_available() is False. Work out the actual reason so the
+    # error message tells the operator what to do about it.
+    detail = "no CUDA device visible"
+    try:
+        import ctypes
+        lib = ctypes.CDLL("libcuda.so.1")
+        rc = lib.cuInit(0)
+        if rc == 0:
+            detail = "cuInit succeeded but torch reports no device (check CUDA_VISIBLE_DEVICES)"
+        elif rc == 999:
+            detail = ("cuInit() returned 999 (CUDA_ERROR_UNKNOWN): the NVIDIA driver is in a "
+                      "fault state. This is a HOST-level failure -- `nvidia-smi` reports "
+                      "'Unable to determine the device handle ... Unknown Error' for every card. "
+                      "It is NOT fixable from inside the container: it needs the driver reloaded "
+                      "or the node reset (an ops action, typically `nvidia-smi -r` or a reboot).")
+        else:
+            detail = f"cuInit() returned {rc} (not 0): the CUDA runtime could not initialise."
+    except Exception as e:
+        detail = f"libcuda.so.1 could not be loaded: {e}"
+
+    # A driver fault looks different from "this box has no NVIDIA hardware".
+    try:
+        import subprocess
+        out = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30)
+        blob = (out.stdout or "") + (out.stderr or "")
+        if "Unknown Error" in blob:
+            detail = ("the NVIDIA driver is in a fault state -- `nvidia-smi -L` reports "
+                      "'Unable to determine the device handle ... Unknown Error' for every card. "
+                      "This is a HOST-level failure and needs an ops action (driver reload or node "
+                      "reset); it cannot be fixed from inside the container.")
+        elif out.returncode == 0 and "No devices were found" not in blob:
+            detail = "nvidia-smi works but torch cannot see any device (check CUDA_VISIBLE_DEVICES)"
+    except Exception:
+        pass
+    return False, detail
+
+
 def autodetect_device_type():
     # prefer to use CUDA if available, otherwise use MPS, otherwise fallback on CPU
+    #
+    # IMPORTANT: the CPU fallback is only legitimate when the machine really
+    # has no NVIDIA hardware. If the hardware is there but the driver is
+    # broken, we must NOT silently pick the CPU -- that is what turned the
+    # 2026-10-24 driver fault into 15.6 hours of a 2B-parameter pretrain
+    # grinding on CPU cores. In that case, die loudly.
+    #
+    # A caller that really wants the CPU passes --device-type cpu, which
+    # skips this function entirely.
     if torch.cuda.is_available():
         device_type = "cuda"
     elif torch.backends.mps.is_available():
         device_type = "mps"
     else:
+        ok, detail = cuda_health()
+        if not ok and _driver_is_present():
+            # The hardware is there and the driver is broken. That is an
+            # ops problem, not a reason to run on the CPU.
+            raise SystemExit(
+                "FATAL: the NVIDIA driver is not working, so CUDA is unavailable.\n"
+                f"       {detail}\n"
+                "       Refusing to fall back to the CPU. If you really want a CPU\n"
+                "       run, pass --device-type cpu explicitly."
+            )
         device_type = "cpu"
     print0(f"Autodetected device type: {device_type}")
     return device_type
+
+
+def _driver_is_present() -> bool:
+    """Is there NVIDIA hardware/driver on this node at all?
+
+    Distinguishes "this box has no GPU" (CPU fallback is fine) from
+    "this box has GPUs but the driver has faulted" (CPU fallback is a
+    disaster).
+    """
+    try:
+        import subprocess
+        out = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30)
+        blob = (out.stdout or "") + (out.stderr or "")
+    except Exception:
+        # nvidia-smi is missing entirely -> no NVIDIA stack here.
+        return False
+    if "Unknown Error" in blob:
+        return True          # the driver is there and faulted
+    if "No devices were found" in blob:
+        return True          # ditto
+    # nvidia-smi ran and listed something -> hardware present.
+    return "GPU 0" in blob or "GPU0" in blob or bool(out.returncode == 0 and blob.strip())
+
 
 def compute_init(device_type="cuda"): # cuda|cpu|mps
     """Basic initialization that we keep doing over and over, so make common."""
@@ -179,7 +290,6 @@ def compute_init(device_type="cuda"): # cuda|cpu|mps
         assert torch.cuda.is_available(), "Your PyTorch installation is not configured for CUDA but device_type is 'cuda'"
     if device_type == "mps":
         assert torch.backends.mps.is_available(), "Your PyTorch installation is not configured for MPS but device_type is 'mps'"
-
     # Reproducibility
     # Note that we set the global seeds here, but most of the code uses explicit rng objects.
     # The only place where global rng might be used is nn.Module initialization of the model weights.
