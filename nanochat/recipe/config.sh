@@ -417,10 +417,19 @@ esac
 GPU_SERVE="${GPU_SERVE:-0}"
 
 # ---------------------------------------------------------------------------
-# Ports. The guard owns the public port; vLLM is internal.
+# Ports. vLLM owns the public port directly; there is no proxy in front of it.
+#
+# There WAS a guard_proxy.py on :8000 forwarding to vLLM on :8010. It was
+# removed from the serving path on 2026-11-01. It truncated any answer at
+# 2000 characters (MAX_ANSWER_CHARS) and then reported finish_reason="stop",
+# so a cut answer looked complete to the client. The module is still on disk
+# because the stage-14 unit tests import its pure functions; nothing serves it.
+#
+# UPSTREAM_PORT is kept as an ALIAS of PUBLIC_PORT so that the stage-15 scrub
+# test, which talks to the "raw" endpoint, keeps working unchanged.
 # ---------------------------------------------------------------------------
 PUBLIC_PORT="${PUBLIC_PORT:-8000}"
-UPSTREAM_PORT="${UPSTREAM_PORT:-8010}"
+UPSTREAM_PORT="${UPSTREAM_PORT:-$PUBLIC_PORT}"
 
 # ---------------------------------------------------------------------------
 # THE TOKEN BUDGET.
@@ -474,13 +483,31 @@ TAG_LONGC_FINAL="${TAG_LONGC_FINAL:-utak-128k-final}"  # stage 7b output
 TAG_SFT="${TAG_SFT:-utak-sft}"                         # stage 8 output
 TAG_TOUCH_A="${TAG_TOUCH_A:-utak-sft-a}"                # the v6a-equivalent anchor
 TAG_TOUCH_B="${TAG_TOUCH_B:-utak-sft-b}"                # the v6a-equivalent: harness basics
-TAG_TOUCH_C="${TAG_TOUCH_C:-utak-sft-c}"                # the SERVED checkpoint (v6j)
+TAG_TOUCH_C="${TAG_TOUCH_C:-utak-sft-c}"                # 9f output: the v6j-equivalent (was SERVED)
+TAG_TOUCH_D="${TAG_TOUCH_D:-utak-sft-d}"                # 9g output: multi-step, THE SERVED CHECKPOINT
 
 # ---------------------------------------------------------------------------
 # Final checkpoint that gets exported and served.
 # ---------------------------------------------------------------------------
-FINAL_TAG="${FINAL_TAG:-$TAG_TOUCH_C}"
-FINAL_STEP="${FINAL_STEP:-240}"
+FINAL_TAG="${FINAL_TAG:-$TAG_TOUCH_D}"
+
+# FINAL_STEP is the step of 9g's LAST checkpoint, so it must equal 9g's
+# --num-iterations. It was 240 when 9f produced the served checkpoint; 9g
+# runs 120, so 240 named a file 9g never writes.
+#
+# That was not cosmetic. Stage 10 resolves the step to pack with
+# stage_read_step "$FINAL_TAG" ... "$FINAL_STEP" fixed, which takes the
+# constant LITERALLY and refuses to fall back to the handoff record. With
+# 240 it demanded model_000240.pt from a directory whose last file is
+# model_000120.pt, and died with
+#   FATAL: the checkpoint set for step 240 is not complete
+# -- after nine rungs and ~7 hours of training, at the pack step, with the
+# training work complete and unpackable. That is the same failure shape as
+# the 2026-10-27 loop: a step constant that disagrees with the disk.
+#
+# Keep this equal to 09_touchup.sh's 9g --num-iterations. The test
+# test_the_final_served_step_matches_the_rung_that_produces_it checks it.
+FINAL_STEP="${FINAL_STEP:-120}"
 
 # ---------------------------------------------------------------------------
 # The step each stage must REACH for the next stage to be able to read it.
@@ -972,7 +999,7 @@ export MODEL_NAME MODEL_DIR_NAME REPO_TAG NANOCHAT_ROOT NANOCHAT_BASE_DIR \
        PUBLIC_PORT UPSTREAM_PORT \
        TAG_BASE TAG_SFT TAG_WARMUP TAG_RL_WARMUP TAG_RL_PILOT TAG_RL \
        TAG_LONGC TAG_LONGC_FINAL \
-       TAG_TOUCH_A TAG_TOUCH_B TAG_TOUCH_C FINAL_TAG FINAL_STEP \
+       TAG_TOUCH_A TAG_TOUCH_B TAG_TOUCH_C TAG_TOUCH_D FINAL_TAG FINAL_STEP \
        HANDOFF_DIR \
        BABY_ONIT_DIR GATE_DATA_DIR LOG_DIR \
        PRETRAIN_EVAL_TOKENS PRETRAIN_EVAL_EVERY \

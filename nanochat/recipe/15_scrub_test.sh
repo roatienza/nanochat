@@ -20,7 +20,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 export BABY_ONIT_DIR GATE_DATA_DIR
 export UTAK_MODEL_NAME="$MODEL_NAME"
-export UTAK_RAW_URL="${UTAK_RAW_URL:-http://127.0.0.1:$UPSTREAM_PORT}"
+export UTAK_RAW_URL="${UTAK_RAW_URL:-http://127.0.0.1:$PUBLIC_PORT}"
 
 log "=== Stage 15: the live-server scrub hypothesis test ==="
 log "    raw endpoint: $UTAK_RAW_URL"

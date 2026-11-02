@@ -228,7 +228,12 @@ SEG_MAX_FREQ = 3          # how often one segment may repeat before it is a loop
 # longest legitimate answer observed was 839 chars and the training pads top
 # out at ~2600, so 2000 is a safe ceiling that still stops a runaway long
 # before the client's 32768-token budget.
-MAX_ANSWER_CHARS = 2000   # a longer answer than this is a runaway loop
+MAX_ANSWER_CHARS = 2000   # a longer LIVE answer than this is a runaway loop
+# Stored history is replayed, not generated: a turn above this many chars is
+# truncated (keeping its head), never replaced by the marker. Measured on the
+# real replay: three legitimate turns at 2,360 / 2,046 / 2,479 chars were being
+# erased, which degraded the model's own prior work as a session went on.
+HISTORY_TURN_CHARS = 1200
 
 
 def count_literal_n(s: str) -> int:
@@ -282,14 +287,22 @@ def max_segment_frequency(s: str, min_len: int = 4) -> int:
     return max(c.values()) if c else 0
 
 
-def is_degenerate(s: str, min_len: int = CYCLE_MIN_LEN) -> bool:
+def is_degenerate(s: str, min_len: int = CYCLE_MIN_LEN, check_length: bool = True) -> bool:
     """True when a stored/generated text has entered a degeneration loop.
 
     Covers period-1 runs (48+ identical chars), short-period cycles
-    (period 2..8, >= 8 reps, >= min_len chars) such as the literal '\n'
+    (period 2..8, >= 8 reps, >= min_len chars) such as the literal backslash-n
     loop, semantic segment repetition with varying gaps, near-period
     (drifting) frame repetition, literal-escape spam, and the
     'm'/whitespace flood.
+
+    `check_length` is for STORED HISTORY, not for live generations. Length is a
+    runaway signal only when the guard is watching a completion against a token
+    budget. A turn the harness already saved can legitimately be long: the
+    measured replay contains real answers at 2,360 / 2,046 / 2,479 chars, and
+    erasing such a turn destroys the model's own prior work, which reads to the
+    user as poor context understanding. scrub_messages therefore calls with
+    check_length=False and TRUNCATES instead of erasing.
     """
     if not s:
         return False
@@ -320,7 +333,7 @@ def is_degenerate(s: str, min_len: int = CYCLE_MIN_LEN) -> bool:
     # unique, so no repetition test can see it. Calibrated against the real
     # model: legitimate answers top out at ~840 chars and the training pads
     # at ~2600, so 4000 is a safe ceiling.
-    if len(s) >= MAX_ANSWER_CHARS:
+    if check_length and len(s) >= MAX_ANSWER_CHARS:
         return True
     if len(s) >= 200 and re.fullmatch(r"[\sm]{200,}", s[-200:]):
         return True
@@ -428,11 +441,25 @@ def scrub_messages(messages: list) -> tuple:
     for m in messages or []:
         if isinstance(m, dict) and m.get("role") == "assistant":
             content = m.get("content")
-            if isinstance(content, str) and is_degenerate(content):
+            # A stored turn is judged on STRUCTURE only (check_length=False):
+            # length is a runaway signal for a live completion, not for text
+            # the harness already saved. Erasing a long-but-legitimate turn
+            # destroys the model's own prior work mid-session.
+            if isinstance(content, str) and is_degenerate(content, check_length=False):
                 n += 1
                 mm = dict(m)
                 mm["content"] = "[earlier answer truncated]"
                 mm.pop("tool_calls", None)
+                out.append(mm)
+                continue
+            # Too long to replay verbatim, but structurally healthy: TRUNCATE
+            # instead of erasing, so the model keeps the content it produced
+            # and the head of its own answer stays in context.
+            if isinstance(content, str) and len(content) > HISTORY_TURN_CHARS:
+                n += 1
+                mm = dict(m)
+                head = content[:HISTORY_TURN_CHARS]
+                mm["content"] = head + f" [...{len(content) - HISTORY_TURN_CHARS} chars trimmed]"
                 out.append(mm)
                 continue
         out.append(m)

@@ -78,6 +78,15 @@ parser.add_argument("--harness-basics-epochs", type=int, default=0,
 parser.add_argument("--harness-poison-epochs", type=int, default=0,
                     help="copies of HarnessPoison (broken-answer history -> act on current turn; needs the no_train tokenizer flag) in the mixture")
 parser.add_argument("--smoltalk-epochs", type=int, default=1)
+parser.add_argument("--multistep-epochs", type=int, default=0,
+                    help="copies of MultiStep (verifiable multi-step tool episodes on the "
+                         "DEPLOYED tool surface) in the mixture")
+parser.add_argument("--multistep-rows", type=int, default=3000,
+                    help="rows per MultiStep copy")
+parser.add_argument("--multistep-seed", type=int, default=2027)
+parser.add_argument("--multistep-families", type=str,
+                    default="grep_then_read,list_then_read,edit_then_verify,sum_three,search_then_read",
+                    help="comma-separated MultiStep families")
 parser.add_argument("--embedding-lr", type=float, default=0.072, help="0.24x of pretrain (SFT-ish)")
 parser.add_argument("--unembedding-lr", type=float, default=0.0019)
 parser.add_argument("--matrix-lr", type=float, default=0.0048)
@@ -311,7 +320,13 @@ if args.harness_poison_epochs > 0:
     from tasks.harness_poison import HarnessPoison
     for _ in range(args.harness_poison_epochs):
         train_tasks.append(HarnessPoison(n_rows=6000, seed=1111))
-for _ in range(args.smoltalk_epochs):
+if args.multistep_epochs > 0:
+    from tasks.multistep import MultiStep
+    _ms_fams = tuple(f.strip() for f in args.multistep_families.split(",") if f.strip())
+    for _ in range(args.multistep_epochs):
+        train_tasks.append(MultiStep(families=_ms_fams, n_rows=args.multistep_rows,
+                                     seed=args.multistep_seed))
+if args.smoltalk_epochs > 0:
     st = SmolTalk(split="train", stop=args.smoltalk_cap or None)  # Task(start,stop) view
     train_tasks.append(st)
 train_dataset = TaskMixture(train_tasks)
@@ -321,6 +336,7 @@ print0(f"Training mixture: {len(train_dataset):,} rows (LongCtx x{args.longctx_e
        f"ToolStop x{args.toolstop_epochs}, HarnessReplay x{args.harness_epochs}, "
        f"HarnessBasics x{args.harness_basics_epochs}, "
        f"HarnessPoison x{args.harness_poison_epochs}, "
+       f"MultiStep x{args.multistep_epochs}, "
        f"SmolTalk x{args.smoltalk_epochs})")
 val_dataset = TaskMixture([
     LongContextSFT(levels=(1,), instances_per_level=4, seed=999),
@@ -399,7 +415,11 @@ def batches(split):
         yield inputs, targets
 
 train_batches = PrefetchLoader(batches("train"))
-val_batches = lambda: batches("val")
+# NOTE: batches() is a generator function, so `lambda: batches("val")`
+# built a NEW generator on every call and `next(val_batches())` handed
+# back the same first batch on all eval_steps iterations -- the eval was
+# a single batch measured 16 times, not an average over 16 batches.
+# The eval loop hoists one loader instead. Do not reintroduce a lambda.
 
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size
@@ -488,9 +508,10 @@ for step in range(start_step, run_steps + 1):
         # forward instead, accumulating sum-loss and bytes manually.
         total_nats = torch.tensor(0.0, dtype=torch.float32, device=device)
         total_bytes = torch.tensor(0, dtype=torch.int64, device=device)
+        val_loader = batches("val")  # one loader per pass; see note at val_batches
         with torch.no_grad():
             for _ in range(eval_steps):
-                vx, vy = next(val_batches())
+                vx, vy = next(val_loader)
                 valid = vy >= 0
                 vy_safe = torch.where(valid, vy, torch.zeros_like(vy))
                 nb = token_bytes[vy_safe]

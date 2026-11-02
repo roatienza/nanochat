@@ -19,6 +19,7 @@ Deploy only on 21/21.
 """
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -37,6 +38,9 @@ cfg = {"data_path": DATA_DIR, "serving": {"host": URL.rsplit('/v1', 1)[0],
        "max_context_tokens": 262144, "temperature": 0.6, "top_p": 0.95,
        "max_tokens": 32768, "max_chat_iterations": -1, "think": True}}
 SYSMSG = bo.build_system_prompt(cfg)
+# The date the model is actually told, e.g. "... (today: 2026-10-31)."
+_m = re.search(r"today:\s*(\d{4}-\d{2}-\d{2})", SYSMSG)
+EXPECTED_DATE = _m.group(1) if _m else time.strftime("%Y-%m-%d")
 TOOLS = [s for s, _ in bo.TOOLS.values()]
 REPLAY = bo.build_session_messages(bo.load_session_history(cfg), 8000)
 
@@ -136,7 +140,12 @@ def e_call_bash_ls(fin, calls, content):
 
 
 def e_date_from_system(fin, calls, content):
-    return not calls and "2026-10-19" in content and CANNED not in content
+    # The contract is "report the date that is in your system prompt", not
+    # "report one particular day". SYSMSG is rendered from time.strftime at
+    # run time, so the expected date has to be read back out of it; a
+    # hardcoded literal is only correct on the day it was written and then
+    # fails forever after.
+    return not calls and EXPECTED_DATE in content and CANNED not in content
 
 
 def main():

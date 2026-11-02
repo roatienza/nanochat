@@ -33,7 +33,20 @@ fi
 #   - no turn may take more than a few seconds
 #   - no answer may contain a literal backslash-n run
 #   - the tool loop must reach a final answer
-if grep -qi 'degenerate' "$LOG_DIR/e2e_harness.log"; then
+# NOTE: this used to grep for the word "degenerate" anywhere in the log. The
+# harness ALWAYS prints a summary line "degenerate turns: N/8" (and "PASS" or
+# "FAIL" right after it), so that grep matched on a perfectly clean run and
+# stage 13 died with "found a degenerate answer" while the log said
+# "degenerate turns: 0/8". The harness already exits non-zero on a real
+# failure (checked above); test the summary line, not the word.
+deg_summary=$(grep -oE 'degenerate turns: [0-9]+/[0-9]+' "$LOG_DIR/e2e_harness.log" | tail -1)
+if [ -n "$deg_summary" ]; then
+  deg_bad=${deg_summary#degenerate turns: }
+  deg_bad=${deg_bad%%/*}
+  if [ "$deg_bad" != "0" ]; then
+    die "e2e found $deg_summary -- see $LOG_DIR/e2e_harness.log"
+  fi
+elif grep -qi 'DEGENERATE' "$LOG_DIR/e2e_harness.log"; then
   die "e2e found a degenerate answer -- see $LOG_DIR/e2e_harness.log"
 fi
 

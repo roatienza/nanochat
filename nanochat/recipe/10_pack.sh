@@ -25,10 +25,28 @@ log "=== Stage 10: pack $FINAL_TAG @ $FINAL_STEP -> $MODEL_DIR ==="
 # The step to pack. It is the step stage 9's handoff record names -- the
 # step the served checkpoint actually reached. The FINAL_STEP constant is
 # the fallback for output that predates the handoff records.
+#
+# This must be "dynamic", not "fixed". Every other consumer in the recipe
+# (02..09) asks for "dynamic"; this one asked for "fixed", which tells
+# stage_read_step to take the FINAL_STEP constant LITERALLY and never look
+# at the handoff record -- the exact opposite of what the comment above
+# promises, and the exact failure the handoff records were introduced to
+# end.
+#
+# It bit for real. FINAL_STEP was left at 240 when the served tag moved
+# from 9f (240 iterations, utak-sft-c) to 9g (120 iterations,
+# utak-sft-d). Stage 9 wrote a correct handoff naming step 120, and this
+# call ignored it and demanded model_000240.pt -- so stage 10 would have
+# died after all nine rungs, with the training done and nothing packable.
+#
+# "dynamic" also survives the case that actually happens on a restart: the
+# pipeline shell exported FINAL_STEP at launch, so a config.sh edit does
+# not reach a stage started from that shell. The handoff record always
+# names what the trainer really wrote.
 FINAL_STEP_RESOLVED="$(stage_read_step "$FINAL_TAG" \
   "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$FINAL_TAG" \
   "$NANOCHAT_BASE_DIR/chatsft_checkpoints/$FINAL_TAG" \
-  "$FINAL_STEP" fixed)" \
+  "$FINAL_STEP" dynamic)" \
   || die "cannot establish the step to pack"
 log "    packing $FINAL_TAG @ $FINAL_STEP_RESOLVED"
 

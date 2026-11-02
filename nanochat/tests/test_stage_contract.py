@@ -83,7 +83,19 @@ LIVE = {
     "utak-rl": "chatrl_checkpoints/utak-rl",
     "utak-128k-final": "base_checkpoints/utak-128k-final",
     "utak-sft": "chatsft_checkpoints/utak-sft",
-    "utak-sft-c": "chatsft_checkpoints/utak-sft-c",
+    # Stage 9's OUTPUT, and the only tag stage 10 reads. It is utak-sft-d
+    # (the 9g multi-step rung, 120 iterations), not utak-sft-c.
+    #
+    # This entry said "utak-sft-c" until 2026-10-31. That was correct when
+    # 9f owned the served tag, but when 9g was appended the served tag
+    # moved to utak-sft-d and this table did not move with it. The stale
+    # entry then did real damage: utak-sft-c is an INTERMEDIATE rung of
+    # stage 9 (9f's output, consumed by 9g), and no stage ever records a
+    # handoff for an intermediate rung -- 09_touchup.sh records only
+    # $FINAL_TAG, once, after the last rung. So the test demanded a record
+    # that the recipe is designed never to write, and reported it as a
+    # broken contract. The failure was in the test, not in the recipe.
+    "utak-sft-d": "chatsft_checkpoints/utak-sft-d",
 }
 
 # The legacy lineage's contract: (stage script, the checkpoint it reads,
@@ -612,11 +624,65 @@ def test_the_final_served_checkpoint_step():
         pytest.skip(f"{ORIG['touch_b']} is not on this machine")
     assert 240 in have, f"the served checkpoint must exist at step 240, have {sorted(have)}"
 
-    # ... and the recipe must agree.
+
+def test_the_final_served_step_matches_the_rung_that_produces_it():
+    """FINAL_STEP must be the step of the rung that WRITES $FINAL_TAG.
+
+    This used to assert FINAL_STEP == 240, because 9f wrote utak-sft-c and
+    9f runs 240 iterations. When 9g was appended -- producing utak-sft-d,
+    the new FINAL_TAG, over 120 iterations -- FINAL_STEP stayed at 240 and
+    nothing noticed. Stage 10 resolves the step to pack with
+
+        stage_read_step "$FINAL_TAG" ... "$FINAL_STEP" fixed
+
+    and "fixed" means the constant is taken LITERALLY: it does not fall
+    back to the handoff record. So after nine rungs and ~7 hours of
+    training it demanded model_000240.pt from a directory whose last
+    checkpoint is model_000120.pt and died with "the checkpoint set for
+    step 240 is not complete" -- training complete, checkpoint unpackable.
+
+    The invariant is not the number, it is the DERIVATION: the served step
+    is whatever the rung that writes the served tag was told to run. Assert
+    that, so appending or resizing a rung cannot leave a stale constant
+    behind again.
+    """
     cfg = open(os.path.join(RECIPE, "config.sh")).read()
     m = re.search(r'FINAL_STEP="\$\{FINAL_STEP:-(\d+)\}"', cfg)
     assert m, "config.sh has no FINAL_STEP"
-    assert m.group(1) == "240", f"FINAL_STEP is {m.group(1)}, expected 240"
+    final_step = int(m.group(1))
+
+    m = re.search(r'^FINAL_TAG="\$\{FINAL_TAG:-\$?\{?([A-Za-z0-9_]+)\}?\}"', cfg, re.M)
+    assert m, "config.sh has no FINAL_TAG"
+    final_tag_var = m.group(1)  # e.g. TAG_TOUCH_D
+
+    m = re.search(rf'^{final_tag_var}="\$\{{{final_tag_var}:-([^}}]+)\}}"', cfg, re.M)
+    assert m, f"config.sh does not define {final_tag_var}"
+    final_tag = m.group(1)
+
+    src = open(os.path.join(RECIPE, "09_touchup.sh")).read()
+    # The run_mod block that WRITES the served tag. FINAL_TAG is defined as
+    # $TAG_TOUCH_D, and the rung writes --output-tag "$TAG_TOUCH_D", so look
+    # for the tag VARIABLE rather than the literal "$FINAL_TAG".
+    blocks = re.split(r'\nrun_mod ', src)
+    owners = [b for b in blocks if f'--output-tag "${final_tag_var}"' in b]
+    assert owners, (
+        f"no run_mod block in 09_touchup.sh writes --output-tag "
+        f"\"${final_tag_var}\" (FINAL_TAG={final_tag}); stage 10 would pack "
+        f"a directory no rung produces."
+    )
+    assert len(owners) == 1, f"{len(owners)} rungs write $FINAL_TAG; expected exactly 1"
+    it = re.search(r'--num-iterations (\d+)', owners[0])
+    assert it, f"the rung that writes $FINAL_TAG has no --num-iterations"
+    rung_iters = int(it.group(1))
+
+    assert final_step == rung_iters, (
+        f"FINAL_STEP is {final_step} but the rung that writes $FINAL_TAG "
+        f"({final_tag}) runs --num-iterations {rung_iters}. Stage 10 packs "
+        f"step $FINAL_STEP with mode 'fixed', which reads the constant "
+        f"literally and will demand model_{final_step:06d}.pt from a "
+        f"directory whose last checkpoint is model_{rung_iters:06d}.pt. "
+        f"Set FINAL_STEP={rung_iters} in config.sh."
+    )
 
 
 def test_the_single_gpu_stages_are_pinned_to_one_card():
@@ -718,6 +784,10 @@ def test_a_complete_run_resumes_at_pack_not_at_stage_1(tmp_path):
     handoff.mkdir(parents=True)
 
     # The nine (tag, directory, final step) rows of the contract, exactly.
+    # Stage 9 is FINAL_TAG, which is TAG_TOUCH_D (utak-sft-d) now that 9g --
+    # the multi-step rung -- produces the served checkpoint. Writing utak-sft-c
+    # here would model a tree in which the served checkpoint is 9f's output and
+    # the pipeline would look complete one stage too early.
     rows = [
         ("utak-base", "base_checkpoints/utak-base", 277760),
         ("utak-sft-tools", "chatsft_checkpoints/utak-sft-tools", 13650),
@@ -727,7 +797,7 @@ def test_a_complete_run_resumes_at_pack_not_at_stage_1(tmp_path):
         ("utak-rl", "chatrl_checkpoints/utak-rl", 177),
         ("utak-128k-final", "base_checkpoints/utak-128k-final", 250),
         ("utak-sft", "chatsft_checkpoints/utak-sft", 800),
-        ("utak-sft-c", "chatsft_checkpoints/utak-sft-c", 240),
+        ("utak-sft-d", "chatsft_checkpoints/utak-sft-d", 120),
     ]
     for tag, rel, step in rows:
         d = base / rel
@@ -803,9 +873,14 @@ rm -rf "$T"
 ''' % cfg
     out = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     names = out.stdout.split()
-    if "STEP=" not in out.stdout:
+    # The script ALWAYS prints "STEP=%s", so a bare `"STEP=" not in out`
+    # test can never fire: when the resolver fails, step is the empty
+    # string and the next line dies with an opaque IndexError instead of
+    # saying what went wrong. Parse the value and check that.
+    _m = re.search(r"^STEP=(\S+)$", out.stdout, re.M)
+    if not _m:
         pytest.skip("the live stage 4 output is not on this machine")
-    step = out.stdout.split("STEP=")[1].split()[0]
+    step = _m.group(1)
     want_model = "model_%06d.pt" % int(step)
     want_meta = "meta_%06d.json" % int(step)
     assert want_model in names, (

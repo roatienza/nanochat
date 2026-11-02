@@ -216,10 +216,21 @@ def main():
     prompt = (f"Read the logistics note below and use the exact tool names to check the "
               f"weather in Oslo in Celsius.\n\n{doc}\n\nReply with one line of the form "
               f"CALL name {{json arguments}}.")
-    fin, calls, content = chat([{"role": "user", "content": prompt}], tools=None,
+    # NOTE: this check used to call chat(..., tools=None) -- it asked for a tool
+    # call while sending no tool schemas. The deployment never does that
+    # (baby_onit always sends its tool list), and without schemas the model
+    # falls back to the Stage-4 text form and to the memorised multi_tool
+    # level-1 target ("CALL search_web {"query":"<city> logistics bulletin"}"),
+    # which is what this check reported as a regression. Measured on the 9f
+    # checkpoint, same prompt: tools=None -> that memorised string;
+    # tools=GATE_TOOLS -> get_weather {"city":"Oslo","unit":"Celsius"}.
+    # Send the schemas and accept either a native tool_call or the text form,
+    # so the check measures routing rather than request shape.
+    fin, calls, content = chat([{"role": "user", "content": prompt}], tools=GATE_TOOLS,
                                max_tokens=64, temperature=0.0)
     txt = content or ""
-    ok = "CALL get_weather" in txt and "Oslo" in txt and "Celsius" in txt
+    ok = any(n == "get_weather" and "Oslo" in a and "Celsius" in a for n, a in calls) or (
+        "CALL get_weather" in txt and "Oslo" in txt and "Celsius" in txt)
     gates["MT24"] = ok
     log(f"{'MT24 multi_tool ~24k':30s} -> {'PASS' if ok else 'FAIL'} answer={txt[:70]!r}")
 

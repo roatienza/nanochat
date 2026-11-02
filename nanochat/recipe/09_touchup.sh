@@ -161,11 +161,12 @@ run_mod "$LOG_DIR/stage9e_harness_basics.log" scripts.chat_sft_long \
   --max-seq-len 32768 --short-window 512 \
   --device-batch-size 1 --total-batch-size 262144 \
   --num-iterations 240 \
-  --longctx-epochs 2 --levels 0,1 --instances-per-level 40 \
-  --longctx-families multi_tool,niah,doc_qa \
+  --longctx-epochs 2 --levels 0,1 --instances-per-level 60 \
+  --longctx-families niah,doc_qa,doc_arith,doc_join,doc_contradict,doc_track,multi_tool,long_summary \
+  --multistep-epochs 2 --multistep-rows 4000 \
   --toolcall-epochs 1 --toolace-epochs 1 --followup-epochs 1 --glaive-mr-epochs 2 \
-  --toolstop-epochs 6 \
-  --harness-epochs 2 --harness-basics-epochs 3 \
+  --toolstop-epochs 1 \
+  --harness-epochs 1 --harness-basics-epochs 1 \
   --smoltalk-epochs 1 --smoltalk-cap 20000 \
   --embedding-lr 0.0036 --unembedding-lr 0.0001 \
   --matrix-lr 0.00024 --scalar-lr 0.006 \
@@ -204,11 +205,12 @@ run_mod "$LOG_DIR/stage9f_harness_poison.log" scripts.chat_sft_long \
   --max-seq-len 32768 --short-window 512 \
   --device-batch-size 1 --total-batch-size 262144 \
   --num-iterations 240 \
-  --longctx-epochs 2 --levels 0,1 --instances-per-level 40 \
-  --longctx-families multi_tool,niah,doc_qa \
+  --longctx-epochs 2 --levels 0,1 --instances-per-level 60 \
+  --longctx-families niah,doc_qa,doc_arith,doc_join,doc_contradict,doc_track,multi_tool,long_summary \
+  --multistep-epochs 2 --multistep-rows 4000 \
   --toolcall-epochs 1 --toolace-epochs 1 --followup-epochs 1 --glaive-mr-epochs 2 \
-  --toolstop-epochs 6 \
-  --harness-epochs 2 --harness-basics-epochs 3 --harness-poison-epochs 3 \
+  --toolstop-epochs 1 \
+  --harness-epochs 1 --harness-basics-epochs 1 --harness-poison-epochs 1 \
   --smoltalk-epochs 1 --smoltalk-cap 20000 \
   --embedding-lr 0.0036 --unembedding-lr 0.0001 \
   --matrix-lr 0.00024 --scalar-lr 0.006 \
@@ -216,6 +218,56 @@ run_mod "$LOG_DIR/stage9f_harness_poison.log" scripts.chat_sft_long \
   --warmup-ratio 0.02 --warmdown-ratio 0.5 --final-lr-frac 0.0 \
   --eval-every 40 --eval-tokens 524288 --save-every 60 --ce-chunk 4096 \
 || die "stage 9f failed"
+
+# ---------------------------------------------------------------------------
+# 9g: MULTI-STEP, LAST. THE ORDERING FIX.
+#
+#     The ladder above trains agentic behaviour in stages 5-6 and then
+#     overwrites it in 8-9, and what 5-6 train is not the deployed capability:
+#     tasks/agentic.py emits ONE user turn and rewards a generated Python
+#     function, i.e. single-turn code generation, not tool use.
+#
+#     Measured on the served checkpoint: a request needing two dependent calls
+#     produces one call and then either stops or answers from imagination.
+#     Nothing in 9a-9f requires a SECOND call whose arguments are the FIRST
+#     result -- except toolfollowup, which is hermes replay of call -> result
+#     -> prose and never chains two calls.
+#
+#     9g runs LAST so nothing downstream can erase it. It trains verifiable
+#     episodes on the EXACT 8 tools the deployed agent exposes
+#     (baby_onit.py:749-766): web_search, fetch_content, bash, write_file,
+#     read_file, edit_file, local_search, grep -- not the long-context task's
+#     get_weather/search_web/send_email/create_ticket, which the agent does
+#     not have.
+#
+#     Every episode needs >=2 calls and the answer is a function of sandbox
+#     state the question does not reveal, so the row cannot be learned by
+#     pattern. The gold trajectory is verified to solve its own task at build
+#     time (tasks/multistep.py:build_episode raises otherwise).
+#
+#     Low LR and short: this is a capability ADDER, not a re-anchor. The
+#     mixture keeps long-context and the harness rows present so 9g cannot
+#     undo 9e/9f the way 9f undid the rungs before it.
+# ---------------------------------------------------------------------------
+run_mod "$LOG_DIR/stage9g_multistep.log" scripts.chat_sft_long \
+  --run "utak-touch-multistep" \
+  --source-phase sft --model-tag "$TAG_TOUCH_C" --model-step 240 \
+  --output-tag "$TAG_TOUCH_D" \
+  --max-seq-len 32768 --short-window 512 \
+  --device-batch-size 1 --total-batch-size 262144 \
+  --num-iterations 120 \
+  --multistep-epochs 4 --multistep-rows 4000 \
+  --longctx-epochs 1 --levels 0,1 --instances-per-level 30 \
+  --longctx-families niah,doc_qa,doc_arith,doc_join,doc_contradict,doc_track,multi_tool \
+  --followup-epochs 1 --glaive-mr-epochs 1 \
+  --harness-epochs 1 --harness-basics-epochs 1 \
+  --smoltalk-epochs 1 --smoltalk-cap 10000 \
+  --embedding-lr 0.0012 --unembedding-lr 0.00003 \
+  --matrix-lr 0.00008 --scalar-lr 0.002 \
+  --weight-decay 0.028 \
+  --warmup-ratio 0.02 --warmdown-ratio 0.5 --final-lr-frac 0.0 \
+  --eval-every 40 --eval-tokens 524288 --save-every 60 --ce-chunk 4096 \
+|| die "stage 9g failed"
 
 log "Stage 9 complete. SERVED CHECKPOINT: chatsft_checkpoints/$FINAL_TAG @ $FINAL_STEP"
 log "Expected: v5x gate 15/15, HP gate 6/7 (HP5 is a known, cosmetic, pre-existing failure)."
